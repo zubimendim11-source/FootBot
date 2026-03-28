@@ -213,7 +213,7 @@ CLUBS = {
         "Manchester United": {"emoji": "🔴", "players": [
         {"name": "Lammens", "rating": 80, "pos": "GK"}, {"name": "Bayindir", "rating": 75, "pos": "GK"}, {"name": "Heaton", "rating": 67, "pos": "GK"},
         {"name": "Dalot", "rating": 78, "pos": "DEF"}, {"name": "Mazraoui", "rating": 80, "pos": "DEF"}, {"name": "Heaven", "rating": 73, "pos": "DEF"}, {"name": "León", "rating": 64, "pos": "DEF"},
-        {"name": "Yoro", "rating": 78, "pos": "DEF"}, {"name": "De Ligt", "rating": 82, "pos": "DEF"}, {"name": "Dorgu", "rating": 77, "pos": ["MID", "DEF"]},
+        {"name": "Yoro", "rating": 78, "pos": "DEF"}, {"name": "De Ligt", "rating": 82, "pos": "DEF"}, {"name": "Dorgu", "rating": 77, "pos": "MID"},
         {"name": "Maguire", "rating": 81, "pos": "DEF"}, {"name": "Martinez", "rating": 81, "pos": "DEF"},
         {"name": "Shaw", "rating": 79, "pos": "DEF"}, {"name": "Malacia", "rating": 75, "pos": "DEF"},
         {"name": "Casemiro", "rating": 82, "pos": "MID"}, {"name": "Ugarte", "rating": 78, "pos": "MID"}, {"name": "Mount", "rating": 78, "pos": "MID"},
@@ -259,7 +259,7 @@ CLUBS = {
         {"name": "Murillo", "rating": 82, "pos": "DEF"}, {"name": "Morato", "rating": 76, "pos": "DEF"},
         {"name": "Williams", "rating": 80, "pos": "DEF"}, {"name": "Netz", "rating": 73, "pos": "DEF"},
         {"name": "Sangaré", "rating": 78, "pos": "MID"}, {"name": "Domínguez", "rating": 78, "pos": "MID"}, {"name": "Yates", "rating": 76, "pos": "MID"},
-        {"name": "Anderson", "rating": 82, "pos": "MID"}, {"name": "Gibbs-White", "rating": 81, "pos": "MID/FWD"},
+        {"name": "Anderson", "rating": 82, "pos": "MID"}, {"name": "Gibbs-White", "rating": 81, "pos": "MID"},
         {"name": "Hutchinson", "rating": 76, "pos": "FWD"}, {"name": "Bakwa", "rating": 76, "pos": "FWD"},
         {"name": "Hudson-Odoi", "rating": 78, "pos": "FWD"}, {"name": "Ndoye", "rating": 77, "pos": "FWD"},
         {"name": "Igor Jesus", "rating": 77, "pos": "FWD"}, {"name": "Lucca", "rating": 75, "pos": "FWD"},
@@ -305,7 +305,7 @@ CLUBS = {
         {"name": "Hinshelwood", "rating": 76, "pos": "MID"}, {"name": "Milner", "rating": 73, "pos": "MID"},
         {"name": "Groß", "rating": 78, "pos": "MID"}, {"name": "Ayari", "rating": 79, "pos": "MID"},
         {"name": "O'Riley", "rating": 77, "pos": "MID"}, {"name": "Minteh", "rating": 80, "pos": "FWD"},
-        {"name": "Mitoma", "rating": 82, "pos": "FWD/MID"}, {"name": "Welbeck", "rating": 79, "pos": "FWD"}, {"name": "Tzimas", "rating": 72, "pos": "FWD"},
+        {"name": "Mitoma", "rating": 82, "pos": "FWD"}, {"name": "Welbeck", "rating": 79, "pos": "FWD"}, {"name": "Tzimas", "rating": 72, "pos": "FWD"},
         {"name": "Rutter", "rating": 77, "pos": "FWD"}, {"name": "Kostoulas", "rating": 73, "pos": "FWD"}
     ]},
 
