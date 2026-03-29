@@ -1,4 +1,17 @@
+
 TEAM_BALANCES = {
+    # --- ЕВРОПЕЙСКИЕ ГИГАНТЫ ---
+    "Real Madrid": 200_000_000,
+    "Barcelona": 110_000_000,  # Чуть меньше из-за долговых нюансов, но статус топ
+    "Bayern": 160_000_000,
+    "PSG": 220_000_000,        # Максимальный бюджет
+    "Inter": 90_000_000,
+    "Milan": 85_000_000,
+    "Borussia Dortmund": 95_000_000,
+    "Atletico Madrid": 105_000_000,
+    "Bayer Leverkusen": 85_000_000,
+    "Juventus": 100_000_000,
+
     # Top Clubs
     "Arsenal": 150_000_000,
     "Manchester City": 180_000_000,
