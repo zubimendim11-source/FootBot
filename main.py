@@ -93,7 +93,7 @@ def init_db():
     c.execute('''CREATE TABLE IF NOT EXISTS league_stats (
         player_id INTEGER PRIMARY KEY,
         user_id INTEGER,
-        oals INTEGER DEFAULT 0,
+        goals INTEGER DEFAULT 0,
         assists INTEGER DEFAULT 0,
         yellow_cards INTEGER DEFAULT 0,
         red_cards INTEGER DEFAULT 0
