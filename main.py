@@ -21,23 +21,30 @@ from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram import Router
 from aiogram.exceptions import TelegramRetryAfter, TelegramForbiddenError
 from balances import TEAM_BALANCES
+from aiogram.filters.chat_member_updated import ChatMemberUpdatedFilter, IS_NOT_MEMBER, MEMBER
 
 processing_catches = set()
 already_caught = set()
 router = Router()
 broadcast_active = set() 
 
+class AdminMarketStates(StatesGroup):
+    waiting_for_name = State()
+    waiting_for_rating = State()
+    waiting_for_pos = State()
+    waiting_for_price = State()
+
 def init_db():   
     conn = get_db()
     c = conn.cursor()
 
-    # 1. ТАБЛИЦА ПОЛЬЗОВАТЕЛЕЙ
+    # 1. ТАБЛИЦА ЮЗЕРОВ
     c.execute('''CREATE TABLE IF NOT EXISTS users (
         user_id INTEGER PRIMARY KEY,
         username TEXT,
         club TEXT,
         balance INTEGER DEFAULT 100,
-        formation TEXT DEFAULT "4-4-3",
+        formation TEXT DEFAULT "4-3-3",
         wins INTEGER DEFAULT 0,
         draws INTEGER DEFAULT 0,
         losses INTEGER DEFAULT 0,
@@ -51,7 +58,7 @@ def init_db():
         chat_id INTEGER
     )''')
 
-    # 2. ТАБЛИЦА СОСТАВА
+    # 2. ТАБЛИЦА СОСТАВА (SQUAD)
     c.execute('''CREATE TABLE IF NOT EXISTS squad (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         user_id INTEGER,
@@ -71,14 +78,16 @@ def init_db():
         injury_remaining INTEGER DEFAULT 0,
         chat_id INTEGER,
         original_owner_id INTEGER DEFAULT NULL,
-        loan_expires_window INTEGER DEFAULT 0
+        loan_expires_window INTEGER DEFAULT 0,
+        loan_to INTEGER DEFAULT NULL,
+        loan_term INTEGER DEFAULT 0
     )''')
 
+    # 3. ТАБЛИЦА КУБКА
     c.execute("DROP TABLE IF EXISTS cup_bracket")
-
     c.execute('''CREATE TABLE IF NOT EXISTS cup_bracket (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
-        stage TEXT,          -- 'Play-In', '1/8', '1/4', '1/2', 'Final'
+        stage TEXT,
         t1_id INTEGER,
         t1_name TEXT,
         t2_id INTEGER,
@@ -87,9 +96,11 @@ def init_db():
         h_score INTEGER DEFAULT 0,
         a_score INTEGER DEFAULT 0,
         h_pen INTEGER DEFAULT NULL,
-        a_pen INTEGER DEFAULT NULL
+        a_pen INTEGER DEFAULT NULL,
+        first_leg_score TEXT DEFAULT NULL
     )''')
 
+    # 4. ТАБЛИЦЫ ЛИГИ И СТАТИСТИКИ
     c.execute('''CREATE TABLE IF NOT EXISTS league_stats (
         player_id INTEGER PRIMARY KEY,
         user_id INTEGER,
@@ -99,10 +110,8 @@ def init_db():
         red_cards INTEGER DEFAULT 0
     )''')
 
-    # 3. ТАБЛИЦЫ ЛИГИ
     c.execute('CREATE TABLE IF NOT EXISTS league_participants (user_id INTEGER PRIMARY KEY)')
     
-    # ТУТ ДОБАВЛЕНА tour_number сразу при создании
     c.execute('''CREATE TABLE IF NOT EXISTS league_schedule (
         id INTEGER PRIMARY KEY AUTOINCREMENT, 
         home_id INTEGER, 
@@ -111,35 +120,35 @@ def init_db():
         status TEXT DEFAULT "pending"
     )''')
 
-
-    c.execute("PRAGMA table_info(squad)")
-    columns = [column[1] for column in c.fetchall()]
-    # print(f"Колонки в базе: {columns}")
-
-
-    if 'is_banned' not in columns:
-        c.execute('ALTER TABLE squad ADD COLUMN is_banned INTEGER DEFAULT 0')
-    if 'injury_remaining' not in columns:
-        c.execute('ALTER TABLE squad ADD COLUMN injury_remaining INTEGER DEFAULT 0')
-
-
-
+    # 5. ТАБЛИЦА НАСТРОЕК
     c.execute('CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value INTEGER)')
+
+    # --- ПРОВЕРКА И ДОБАВЛЕНИЕ КОЛОНОК (МИГРАЦИИ) ---
+    c.execute("PRAGMA table_info(squad)")
+    squad_cols = [col[1] for col in c.fetchall()]
     
-    try:
-        c.execute("ALTER TABLE cup_bracket ADD COLUMN first_leg_score TEXT DEFAULT NULL")
-        conn.commit()
-    except: pass
+    # Список колонок, которые нужно проверить и добавить если их нет
+    migrations = [
+        ('original_owner_id', 'INTEGER DEFAULT NULL'),
+        ('loan_expires_window', 'INTEGER DEFAULT 0'),
+        ('is_banned', 'INTEGER DEFAULT 0'),
+        ('injury_remaining', 'INTEGER DEFAULT 0'),
+        ('loan_to', 'INTEGER DEFAULT NULL'),
+        ('loan_term', 'INTEGER DEFAULT 0')
+    ]
 
+    for col_name, col_type in migrations:
+        if col_name not in squad_cols:
+            try:
+                c.execute(f'ALTER TABLE squad ADD COLUMN {col_name} {col_type}')
+            except Exception as e:
+                print(f"❌ Ошибка при добавлении {col_name}: {e}")
 
-    try:
-        c.execute('ALTER TABLE league_schedule ADD COLUMN tour_number INTEGER')
-    except:
-        pass 
-
-    # Инициализация настроек
+    # --- ИНИЦИАЛИЗАЦИЯ НАСТРОЕК ---
     c.execute('INSERT OR IGNORE INTO settings (key, value) VALUES ("transfer_window", 0)')
+    c.execute('INSERT OR IGNORE INTO settings (key, value) VALUES ("current_half", 1)')
     c.execute('INSERT OR IGNORE INTO settings (key, value) VALUES ("window_counter", 1)')
+    c.execute('INSERT OR IGNORE INTO settings (key, value) VALUES ("main_chat_id", 0)')
 
     conn.commit()
     conn.close()
@@ -158,8 +167,9 @@ def get_main_kb(user_id: int):
     if user_id in ADMINS: 
         b.button(text="🛠 Админка")
         
-    b.adjust(3, 3, 3, 2)
+    b.adjust(3, 3, 3, 3)
     return b.as_markup(resize_keyboard=True)
+    
 
 # --- МЕХАНИКА ЖЕСТКОГО ЛИМИТА ---
 class CatchLimitMiddleware(BaseMiddleware):
@@ -223,22 +233,47 @@ TOKEN = "8784991908:AAEBvprrJSu2SWidbaBlB8uoo265TfPRLTs"
 bot = Bot(token=TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
 dp.callback_query.outer_middleware(limit_manager)
-ADMINS = [5611356552]  
-CHAT_ID = 5611356552 # Замени на реальный ID своего чата
+ADMINS = [5611356552]
+SET_CHAT_ID = -1003513118924  
+CHAT_ID = 5611356552    
 # -1003556034012, - тест чат
 # -1003345980096 -нищ лига
-# -5137303209 - моя
+# -5137303209 - моя лига
 # 5611356552 - Я
 from aiogram.client.session.aiohttp import AiohttpSession
 
 # Создаем сессию с указанием прокси PythonAnywhere
-session = AiohttpSession(proxy="http://proxy.server:3128")
+# session = AiohttpSession(proxy="http://proxy.server:3128")
 
-# Инициализируем бота с этой сессией
-bot = Bot(token=TOKEN, session=session)
+# # Инициализируем бота с этой сессией
+# bot = Bot(token=TOKEN, session=session)
 
 
 matches_data = {}
+
+@dp.message(F.new_chat_members)
+async def welcome_new_member_service(message: types.Message):
+    if message.chat.id != SET_CHAT_ID:
+        return
+    
+    for user in message.new_chat_members:
+        # ПРОВЕРКА: Если есть юзернейм — пишем через @, если нет — через ID
+        if user.username:
+            mention = f"@{user.username}"
+        else:
+            mention = f"<a href='tg://user?id={user.id}'>{user.first_name}</a>"
+        
+        text = (
+            f"🏔 <b>ВНИМАНИЕ, {mention}!</b>\n\n"
+            f"Ты зачислен в <b>NORTH DIVISION</b>. Здесь дисциплина важнее таланта.\n\n"
+            f"📜 <b>ИНСТРУКЦИЯ:</b>\n"
+            f"— Активируй бота и изучи рынок.\n"
+            f"— Любые нарушения устава караются исключением.\n\n"
+            f"<i>Строго следуй курсу и побеждай.</i>\n\n"
+            f"🤝 <b>Командующий:</b> @North_Officail ⚡️"
+        )
+        
+        await message.answer(text, parse_mode="HTML")
 
 @dp.message(F.text == "🖼 Сетка Кубка")
 async def show_cup_grid_message(m: types.Message):
@@ -630,7 +665,7 @@ async def show_formation_menu_inline(cb: types.CallbackQuery):
     conn = get_db(); c = conn.cursor()
     c.execute('SELECT formation FROM users WHERE user_id = ?', (uid,))
     res = c.fetchone()
-    current_form = res[0] if res else "4-4-3"
+    current_form = res[0] if res else "4-3-3"
     conn.close()
 
     builder = InlineKeyboardBuilder()
@@ -705,7 +740,6 @@ async def show_fixtures(m: types.Message):
     text += "<i>Чтобы обновить состав перед туром, используй /squad</i>"
 
     await m.answer(text, parse_mode="HTML")
-
 
 @dp.callback_query(F.data == "open_formations")
 async def open_forms_cb(cb: types.CallbackQuery):
@@ -807,12 +841,12 @@ async def edit_squad_message(message: types.Message, user_id: int, chat_id: int)
     # Если сумма цифр больше 10, значит схема битая, ставим 4-4-2
         if sum(f_parts) > 10:
             f_parts = [4, 3, 3]
-            formation_name = "4-4-3"
+            formation_name = "4-3-3"
     
         formation_layout = [1] + f_parts # 1 (ВР) + 4 + 4 + 2 = 11. ТАК И ДОЛЖНО БЫТЬ.
     except:
         formation_layout = [1, 4, 3, 3]
-        formation_name = "4-4-3"
+        formation_name = "4-3-3"
 
     # 4. Получаем игроков, которые стоят в слотах (на поле)
     c.execute('''SELECT id, player_name, rating, pos, slot_id, stamina, injury_type 
@@ -1071,43 +1105,72 @@ async def back(cb: types.CallbackQuery):
 async def manage_player(cb: types.CallbackQuery, state: FSMContext):
     pid_str = cb.data.split("_")[1]
     uid = cb.from_user.id
-    pid = cb.data.split("_")[1]
     
     conn = get_db(); c = conn.cursor()
-    c.execute('SELECT player_name, rating, pos, status FROM squad WHERE id = ?', (pid_str,))
-    row = c.fetchone(); conn.close()
+    # ОБЯЗАТЕЛЬНО добавляем original_owner_id в запрос
+    c.execute('SELECT player_name, rating, pos, status, original_owner_id FROM squad WHERE id = ?', (pid_str,))
+    row = c.fetchone()
+    conn.close()
     
     if row is None:
-        if uid in matches_data:
-            await cb.answer("Игрок заменен или недоступен")
-            return await manage_team(cb)
-        return await edit_squad_message(cb.message, uid)
+        # Твоя стандартная проверка на случай, если игрок пропал
+        return await cb.answer("Игрок не найден")
     
-    # Распаковываем данные, если они есть
-    name, rat, pos, status = row
+    # Распаковываем данные (теперь их 5)
+    name, rat, pos, status, owner_id = row
     await state.update_data(curr_pid=pid_str)
     
     b = InlineKeyboardBuilder()
-    if status != "bench":
-        b.button(text="📥 В запас", callback_data="quick_bench")
-    
-    # Логика кнопок рынка
-    if status == "on_sale":
-        b.button(text="❌ Снять с рынка", callback_data=f"remove_m_{pid_str}")
+
+    # --- ПРОВЕРКА НА АРЕНДУ ---
+    # Если owner_id не NULL и не равен 0 (системный), значит игрок арендован
+    is_loaned = owner_id is not None and owner_id != 0
+
+    if is_loaned:
+        # МЕНЮ ДЛЯ АРЕНДОВАННОГО ИГРОКА (только состав)
+        if status != "bench":
+            b.button(text="📥 В запас", callback_data="quick_bench")
+        else:
+            # Если он в запасе, можно добавить кнопку "В состав" (если у тебя есть такой хендлер)
+            # b.button(text="🏃 В состав", callback_data=f"to_squad_{pid_str}")
+            pass
+        
+        status_info = "🎭 <b>Статус:</b> Арендован"
     else:
-        b.button(text="🚀 Выставить на рынок", callback_data="pre_sell")
-        b.button(text="🤝 Сдать в аренду", callback_data=f"pre_loan_{pid}")
-    
+        # СТАНДАРТНОЕ МЕНЮ ДЛЯ СВОЕГО ИГРОКА
+        if status != "bench":
+            b.button(text="📥 В запас", callback_data="quick_bench")
+        
+        # Логика кнопок рынка (только для своих!)
+        if status == "on_sale":
+            b.button(text="❌ Снять с рынка", callback_data=f"remove_m_{pid_str}")
+        else:
+            b.button(text="🚀 Выставить на рынок", callback_data="pre_sell")
+            b.button(text="🤝 Сдать в аренду", callback_data=f"pre_loan_{pid_str}")
+        
+        status_text = "На рынке" if status == "on_sale" else ("В запасе" if status == "bench" else "В составе")
+        status_info = f"📊 <b>Статус:</b> {status_text}"
+
+    # Общие кнопки
     b.button(text="⬅️ Назад", callback_data="back_to_field")
     b.adjust(1)
     
-    status_text = "На рынке" if status == "on_sale" else ("В запасе" if status == "bench" else "В составе")
+    # Формируем текст
+    text = (
+        f"👤 <b>Игрок:</b> {name} (⭐{rat})\n"
+        f"📍 <b>Позиция:</b> {pos}\n"
+        f"{status_info}"
+    )
     
+    if is_loaned:
+        text += "\n\n⚠️ <i>Вы не можете продать или обменять этого игрока, так как он находится у вас в аренде.</i>"
+
     await cb.message.edit_text(
-        f"👤 <b>Игрок:</b> {name} (⭐{rat})\n📍 <b>Позиция:</b> {pos}\n📊 <b>Статус:</b> {status_text}", 
+        text, 
         reply_markup=b.as_markup(),
         parse_mode="HTML"
     )
+    await cb.answer()
 
 @dp.message(F.text == "В")
 async def cmd_schemes(message: types.Message):
@@ -1129,21 +1192,29 @@ async def show_full_squad(m: types.Message):
     uid = m.from_user.id
     conn = get_db(); c = conn.cursor()
     
-    # Достаем stamina и injury_type
-    c.execute('SELECT player_name, rating, pos, status, stamina, injury_type FROM squad WHERE user_id = ?', (uid,))
+    # Мы берем только тех, чей user_id совпадает с ID юзера. 
+    # И исключаем системных или удаленных.
+    c.execute('''SELECT player_name, rating, pos, status, stamina, injury_type 
+                 FROM squad 
+                 WHERE user_id = ? 
+                 ORDER BY rating DESC''', (uid,))
     players = c.fetchall()
     conn.close()
 
+    if not players:
+        return await m.answer("📭 Ваш состав пуст.")
+
     text = "📋 <b>Ваш полный состав:</b>\n\n"
     for name, rat, pos, status, stam, inj in players:
-        if inj:
-            icon = "🚑"
-            stat_text = f"({inj})"
-        else:
-            icon = "🔋" if status == "active" else "🪑"
-            stat_text = f"{stam}/50"
-            
-        text += f"{icon} {name} ({pos}) — {rat} | {stat_text}\n"
+        # Иконки для статуса
+        if status == "loaned": icon = "🎭" # Арендован у кого-то
+        elif status == "active": icon = "🔋" # В основе
+        else: icon = "🪑" # В запасе
+        
+        # Пометка травмы
+        inj_text = f" [🚑 {inj}]" if inj else ""
+        
+        text += f"{icon} {name} ({pos}) — {rat} | {stam}/50{inj_text}\n"
     
     await m.answer(text, parse_mode="HTML")
 
@@ -1154,33 +1225,40 @@ async def autofill(cb: types.CallbackQuery):
     with get_db() as conn:
         c = conn.cursor()
 
-        # 1. Получаем схему
+        # 1. Получаем схему пользователя
         c.execute('SELECT formation FROM users WHERE user_id = ?', (user_id,))
         res = c.fetchone()
-        if not res: return await cb.answer("Сначала выберите схему!")
+        if not res: 
+            return await cb.answer("❌ Сначала выберите схему в настройках!")
         
-        formation_name = res[0]
-        f_parts = formation_name.split('-')
+        formation_name = res[0] # Например, "4-3-3" или "5-3-2"
+        f_parts = [int(x) for x in formation_name.split('-')]
         
-        # Логика: Вратарь + Защита + Полузащита + Нападение
+        # ДИНАМИЧЕСКАЯ ЛОГИКА:
+        # f_parts[0] - всегда DEF
+        # f_parts[1] - всегда MID
+        # f_parts[2] - всегда FWD
+        # Вратарь (GK) всегда 1
+        
         formation_logic = [
             ("GK", 1), 
-            ("DEF", int(f_parts[0])), 
-            ("MID", int(f_parts[1])), 
-            ("FWD", int(f_parts[2]))
+            ("DEF", f_parts[0]), 
+            ("MID", f_parts[1]), 
+            ("FWD", f_parts[2])
         ]
 
-        # 2. Сбрасываем текущий состав (только тех, кто не на продаже)
+        # 2. Сбрасываем старый состав
+        # Убираем только тех, кто в "active", чтобы не трогать выставленных на трансфер
         c.execute('''UPDATE squad SET slot_id = NULL, status = "bench" 
-                     WHERE user_id = ? AND status != "on_sale"''', (user_id,))
+                     WHERE user_id = ? AND status = "active"''', (user_id,))
 
-        current_slot = 1
         players_added = 0
+        current_slot = 1
 
-        # 3. Заполняем по позициям, выбирая САМЫХ сильных
+        # 3. Заполняем по позициям
         for pos, limit in formation_logic:
-            # ВАЖНО: Добавили ORDER BY rating DESC, чтобы топ-игроки шли первыми
-            c.execute('''SELECT id, rating FROM squad 
+            # Берем самых сильных, здоровых и не забаненных
+            c.execute('''SELECT id FROM squad 
                          WHERE user_id = ? AND pos = ? AND status = "bench" 
                          AND injury_remaining = 0 AND is_banned = 0
                          ORDER BY rating DESC LIMIT ?''', (user_id, pos, limit))
@@ -1190,16 +1268,25 @@ async def autofill(cb: types.CallbackQuery):
                 if players_added >= 11: break 
                 
                 c.execute('UPDATE squad SET slot_id = ?, status = "active" WHERE id = ?', 
-                          (current_slot, row[0]))
+                         (current_slot, row[0]))
                 current_slot += 1
                 players_added += 1
 
         conn.commit()
 
-    # Красивое уведомление
-    await cb.answer(f"⚡️ Автосостав: {players_added}/11 (выбраны лучшие)")
-    # Обновляем сообщение со списком состава
-    await edit_squad_message(cb.message, cb.from_user.id, cb.message.chat.id)
+    # 4. Проверка на "недобор"
+    if players_added < 11:
+        msg = f"⚡️ Автосостав: {players_added}/11. Не хватило игроков на нужные позиции!"
+    else:
+        msg = f"✅ Состав собран по схеме {formation_name}!"
+
+    await cb.answer(msg, show_alert=True)
+    
+    # Обновляем сообщение (вызываем твою функцию отрисовки состава)
+    try:
+        await edit_squad_message(cb.message, user_id, cb.message.chat.id)
+    except:
+        pass
 
 @dp.callback_query(F.data == "clear_squad")
 async def clear_squad_handler(cb: types.CallbackQuery):
@@ -1260,12 +1347,23 @@ async def market_sell(m: types.Message, state: FSMContext):
     p_name, rat = res[0], int(res[1])
 
     # 3. ТА САМАЯ ЗАЩИТА (ЛИМИТЫ ЦЕН)
-    min_p = 4 # Минимум для всех по дефолту
-    if rat >= 90: min_p = 100
-    elif rat >= 85: min_p = 70
-    elif rat >= 80: min_p = 50
-    elif rat >= 75: min_p = 20
-    elif rat >= 70: min_p = 5
+    min_p = 4
+    max_p = 250
+
+    if rat >= 95: 
+        min_p, max_p = 150, 250
+    elif rat >= 90: 
+        min_p, max_p = 100, 250
+    elif rat >= 85: 
+        min_p, max_p = 60, 150
+    elif rat >= 80: 
+        min_p, max_p = 30, 100
+    elif rat >= 75: 
+        min_p, max_p = 15, 60
+    elif rat >= 70: 
+        min_p, max_p = 5, 20
+    else:
+        min_p, max_p = 1, 10
 
     if price < min_p:
         conn.close()
@@ -1274,6 +1372,13 @@ async def market_sell(m: types.Message, state: FSMContext):
             f"🚫 ЦЕНА СЛИШКОМ НИЗКАЯ!\n\n"
             f"Для рейтинга {rat} минималка: {min_p} млн €.\n"
             f"Твоя цена {price} млн € не подходит. Введи цену выше:"
+        )
+    
+    if price > max_p:
+        return await m.answer(
+            f"🚫 Слишком дорого!\n"
+            f"Для рейтинга {rat} потолок цены: {max_p} млн €.\n"
+            f"Даже шейхи столько не заплатят. Сбавь аппетит!"
         )
 
     # 4. Если всё ок — выставляем
@@ -1288,25 +1393,25 @@ async def market_sell(m: types.Message, state: FSMContext):
         conn.close()
         await state.clear()
 
-@dp.callback_query(F.data.startswith("pre_loan_"))
-async def pre_loan(cb: types.CallbackQuery, state: FSMContext):
-    if not is_transfer_open():
-        return await cb.answer("🛑 Рынок закрыт!", show_alert=True)
+# @dp.callback_query(F.data.startswith("pre_loan_"))
+# async def pre_loan(cb: types.CallbackQuery, state: FSMContext):
+#     if not is_transfer_open():
+#         return await cb.answer("🛑 Рынок закрыт!", show_alert=True)
     
-    pid = cb.data.split("_")[2]
-    await state.update_data(loan_pid=pid)
+#     pid = cb.data.split("_")[2]
+#     await state.update_data(loan_pid=pid)
     
-    b = InlineKeyboardBuilder()
-    b.button(text="⏳ Полгода (до след. ТО)", callback_data="loan_dur_1")
-    b.button(text="🗓 Год (через одно ТО)", callback_data="loan_dur_2")
-    await cb.message.edit_text("Выберите срок аренды:", reply_markup=b.as_markup())
+#     b = InlineKeyboardBuilder()
+#     b.button(text="⏳ Полгода (до след. ТО)", callback_data="loan_dur_1")
+#     b.button(text="🗓 Год (через одно ТО)", callback_data="loan_dur_2")
+#     await cb.message.edit_text("Выберите срок аренды:", reply_markup=b.as_markup())
 
-@dp.callback_query(F.data.startswith("loan_dur_"))
-async def set_loan_price(cb: types.CallbackQuery, state: FSMContext):
-    duration = int(cb.data.split("_")[2])
-    await state.update_data(loan_duration=duration)
-    await cb.message.answer("Введите стоимость аренды (млн €):")
-    await state.set_state("waiting_for_loan_price")
+# @dp.callback_query(F.data.startswith("loan_dur_"))
+# async def set_loan_price(cb: types.CallbackQuery, state: FSMContext):
+#     duration = int(cb.data.split("_")[2])
+#     await state.update_data(loan_duration=duration)
+#     await cb.message.answer("Введите стоимость аренды (млн €):")
+#     await state.set_state("waiting_for_loan_price")
 
 @dp.message(F.state == "waiting_for_loan_price")
 async def process_loan_market(m: types.Message, state: FSMContext):
@@ -1329,14 +1434,15 @@ async def process_loan_market(m: types.Message, state: FSMContext):
 async def show_market(m: types.Message):
     if not is_transfer_open():
         return await m.answer("🛒 <b>Рынок закрыт.</b>\nДождитесь открытия трансферного окна!", parse_mode="HTML")
+    
     conn = get_db(); c = conn.cursor()
     
-    # Вытягиваем данные игрока + название клуба продавца
+    # Добавили s.status в запрос, чтобы различать типы сделок
     c.execute('''
-        SELECT s.id, s.player_name, s.rating, s.market_price, u.club, s.user_id 
+        SELECT s.id, s.player_name, s.rating, s.market_price, u.club, s.user_id, s.pos, s.status 
         FROM squad s 
-        JOIN users u ON s.user_id = u.user_id 
-        WHERE s.market_price > 0
+        LEFT JOIN users u ON s.user_id = u.user_id 
+        WHERE s.market_price > 0 AND s.status IN ('on_sale', 'loan_sale')
     ''')
     lots = c.fetchall()
     conn.close()
@@ -1344,31 +1450,333 @@ async def show_market(m: types.Message):
     if not lots:
         return await m.answer("🛒 На рынке пока пусто.")
 
-    for lid, name, rat, price, club_name, seller_id in lots:
-        club_display = club_name if club_name else "Интер" 
+    for lid, name, rat, price, club_name, seller_id, pos, status in lots:
+        if seller_id == 0:
+            club_display = "Свободный агент 🌍"
+        else:
+            club_display = club_name if club_name else "Интер" 
         
         text = (
             f"👤 <b>{name}</b> [{rat}]\n"
+            f"🏃 Позиция: <b>{pos}</b>\n"
             f"🏟 Клуб: <b>({club_display})</b>\n"
             f"💰 Цена: <b>{price} млн €</b>"
         )
         
         b = InlineKeyboardBuilder()
-        # Кнопки в ряд
-        b.button(text="✅ Купить", callback_data=f"buy_{lid}")
+
+        # --- ТА САМАЯ ЛОГИКА КНОПКИ ---
+        if status == "loan_sale":
+            # Если это аренда, меняем текст кнопки
+            b.button(text="🤝 Взять в аренду", callback_data=f"buy_{lid}")
+        else:
+            # Если обычная продажа
+            b.button(text="✅ Купить", callback_data=f"buy_{lid}")
+        
         b.button(text="🤝 Торг", callback_data=f"bargain_{lid}")
-        b.button(text="💬 Чат", callback_data=f"chat_{seller_id}")
         
-        # Делаем сетку: первые две кнопки в ряд, Чат под ними (или 3 в ряд, если хочешь)
+        if seller_id != 0:
+            b.button(text="💬 Чат", callback_data=f"chat_{seller_id}")
+        else:
+            b.button(text="ℹ️ Инфо", callback_data=f"player_info_{lid}")
+        
         b.adjust(2, 1) 
-        
         await m.answer(text, reply_markup=b.as_markup(), parse_mode="HTML")
 
-# Состояние для ожидания цены
 class MarketStates(StatesGroup):
-    waiting_for_sell_price = State() # Для выставления СВОЕГО игрока
-    waiting_for_bid_price = State()  # Для предложения цены ЧУЖОМУ игроку (торг)
+    waiting_for_sell_price = State() 
+    waiting_for_bid_price = State()  
+    waiting_for_trade_player = State() 
+    waiting_for_trade_cash = State()   
 
+@dp.callback_query(F.data.startswith("tr_sel_"), MarketStates.waiting_for_trade_player)
+async def trade_player_selected(cb: types.CallbackQuery, state: FSMContext):
+    
+    my_player_id = int(cb.data.split("_")[2])
+    
+    conn = get_db(); c = conn.cursor()
+    
+    c.execute('SELECT player_name, rating FROM squad WHERE id = ?', (my_player_id,))
+    res = c.fetchone()
+    conn.close()
+    
+    if not res:
+        return await cb.answer("❌ Ошибка: игрок не найден в базе.", show_alert=True)
+    
+    p_name, rat = res
+    
+    
+    await state.update_data(offer_player_id=my_player_id)
+    
+    
+    await state.set_state(MarketStates.waiting_for_trade_cash)
+    
+    await cb.message.answer(
+        f"✅ Вы выбрали: <b>{p_name}</b> ({rat})\n"
+        f"Теперь введите сумму доплаты (млн €).\n"
+        f"<i>Если доплата не нужна, просто введите 0.</i>",
+        parse_mode="HTML"
+    )
+    
+    # ОБЯЗАТЕЛЬНО закрываем "часики" на кнопке
+    await cb.answer()
+
+@dp.callback_query(F.data.startswith("bargain_"))
+async def bargain_type_choice(cb: types.CallbackQuery):
+    if not is_transfer_open():
+        return await cb.answer("🛑 Трансферное окно закрыто!", show_alert=True)
+
+    lot_id = int(cb.data.split("_")[1])
+    
+    conn = get_db(); c = conn.cursor()
+    c.execute('SELECT user_id, status FROM squad WHERE id = ?', (lot_id,))
+    res = c.fetchone()
+    conn.close()
+    
+    if not res:
+        return await cb.answer("❌ Игрок не найден!", show_alert=True)
+        
+    seller_id, status = res
+    
+    if seller_id == cb.from_user.id:
+        return await cb.answer("🚫 Это твой собственный игрок!", show_alert=True)
+
+    kb = InlineKeyboardBuilder()
+    
+    kb.button(text="💰 Предложить цену", callback_data=f"bid_c_{lot_id}")
+      
+    if status != "loan_sale":
+        kb.button(text="🔄 Предложить обмен", callback_data=f"bid_t_{lot_id}")
+    else:
+        pass
+
+    kb.adjust(1)
+    
+    await cb.message.edit_reply_markup(reply_markup=kb.as_markup())
+    await cb.answer()
+
+@dp.callback_query(F.data.startswith("bid_t_"))
+async def start_trade_selection(cb: types.CallbackQuery, state: FSMContext):
+    lot_id = int(cb.data.split("_")[2])
+    await state.update_data(target_lot_id=lot_id)
+    
+    conn = get_db(); c = conn.cursor()
+    # Теперь берем ВСЕХ игроков пользователя (и основу, и запас)
+    c.execute('SELECT id, player_name, rating, pos, status FROM squad WHERE user_id = ?', (cb.from_user.id,))
+    my_squad = c.fetchall()
+    conn.close()
+    
+    if not my_squad:
+        return await cb.answer("❌ У тебя нет игроков для обмена!", show_alert=True)
+
+    kb = InlineKeyboardBuilder()
+    for pid, name, rat, pos, stat in my_squad:
+        # Добавим пометку, если игрок в основе
+        prefix = "⭐️ " if stat == "active" else ""
+        kb.button(text=f"{prefix}{name} ({rat}) [{pos}]", callback_data=f"tr_sel_{pid}")
+    
+    kb.adjust(1)
+    await cb.message.answer("Кого из своих игроков предложишь взамен?\n(⭐️ — игрок основы)", reply_markup=kb.as_markup())
+    await state.set_state(MarketStates.waiting_for_trade_player)
+
+@dp.message(MarketStates.waiting_for_trade_cash)
+async def send_trade_offer(m: types.Message, state: FSMContext):
+    if not m.text.isdigit(): return await m.answer("Введите число!")
+    
+    cash = int(m.text)
+    data = await state.get_data()
+    target_id = data['target_lot_id'] # Игрок на рынке
+    offer_id = data['offer_player_id'] # Игрок покупателя
+    
+    conn = get_db(); c = conn.cursor()
+    # Инфо о цели
+    c.execute('SELECT player_name, rating, user_id FROM squad WHERE id = ?', (target_id,))
+    t_res = c.fetchone()
+    # Инфо о моем
+    c.execute('SELECT player_name, rating FROM squad WHERE id = ?', (offer_id,))
+    m_res = c.fetchone()
+    conn.close()
+
+    if not t_res or not m_res: return await m.answer("Ошибка данных.")
+
+    t_name, t_rat, seller_id = t_res
+    m_name, m_rat = m_res
+
+    kb = InlineKeyboardBuilder()
+    # callback: trade_accept_{кто_предложил}_{его_игрок}_{целевой_игрок}_{доплата}
+    kb.button(text="✅ Принять обмен", callback_data=f"t_acc_{m.from_user.id}_{offer_id}_{target_id}_{cash}")
+    kb.button(text="❌ Отклонить", callback_data=f"ref_b_{m.from_user.id}")
+
+    await bot.send_message(
+        seller_id if seller_id != 0 else ADMINS, # Если свободный агент — админу
+        f"🔄 <b>ПРЕДЛОЖЕНИЕ ОБМЕНА!</b>\n\n"
+        f"У вас хотят забрать: <b>{t_name}</b> ({t_rat})\n"
+        f"Взамен отдают: <b>{m_name}</b> ({m_rat})\n"
+        f"💰 Доплата вам: <b>{cash} млн €</b>\n\n"
+        f"Согласны на такой обмен?",
+        reply_markup=kb.as_markup(),
+        parse_mode="HTML"
+    )
+    await m.answer("🚀 Предложение обмена отправлено владельцу!")
+    await state.clear()
+
+@dp.callback_query(F.data.startswith("t_acc_"))
+async def accept_trade_final(cb: types.CallbackQuery):
+    # t_acc_{buyer_id}_{buyer_pid}_{seller_pid}_{cash}
+    parts = cb.data.split("_")
+    b_id, b_pid, s_pid, cash = int(parts[2]), int(parts[3]), int(parts[4]), int(parts[5])
+    s_id = cb.from_user.id 
+
+    conn = get_db(); c = conn.cursor()
+    
+    # Считаем суммы в миллионах
+    full_cash = cash * 1000000
+    tax = int(full_cash * 0.10) # Налог 10%
+    final_seller_money = full_cash - tax # Сколько получит продавец на руки
+
+    # Проверка баланса покупателя
+    c.execute('SELECT balance FROM users WHERE user_id = ?', (b_id,))
+    res_bal = c.fetchone()
+    
+    if not res_bal or res_bal[0] < full_cash:
+        conn.close()
+        return await cb.message.answer("❌ У инициатора обмена не хватает денег на доплату!")
+
+    try:
+        # 1. Забираем игрока у продавца и отдаем покупателю
+        # Сбрасываем slot_id, чтобы он исчез из основы
+        c.execute('''
+            UPDATE squad 
+            SET user_id = ?, status = "bench", market_price = 0, slot_id = NULL 
+            WHERE id = ?
+        ''', (b_id, s_pid))
+        
+        # 2. Забираем игрока у покупателя и отдаем продавцу
+        c.execute('''
+            UPDATE squad 
+            SET user_id = ?, status = "bench", market_price = 0, slot_id = NULL 
+            WHERE id = ?
+        ''', (s_id, b_pid))
+        
+        # 3. Финансовая часть с учетом комиссии
+        if cash > 0:
+            # С покупателя списываем ВСЮ сумму доплаты
+            c.execute('UPDATE users SET balance = balance - ? WHERE user_id = ?', (full_cash, b_id))
+            
+            # Продавцу начисляем за вычетом 10%, если это не свободный агент (ID 0)
+            if s_id != 0:
+                c.execute('UPDATE users SET balance = balance + ? WHERE user_id = ?', (final_seller_money, s_id))
+        
+        conn.commit()
+
+        # Красивый отчет о сделке
+        tax_report = ""
+        if cash > 0:
+            tax_report = (
+                f"\n💰 Доплата: <b>{cash} млн €</b>"
+                f"\n🏦 Комиссия (10%): <b>{tax // 1000000} млн €</b>"
+                f"\n💵 Получено на руки: <b>{final_seller_money // 1000000} млн €</b>"
+            )
+
+        await cb.message.edit_text(
+            f"🤝 <b>Обмен успешно завершен!</b>\n"
+            f"Игроки поменялись клубами и переведены в запас."
+            f"{tax_report}", 
+            parse_mode="HTML"
+        )
+        
+        await bot.send_message(b_id, f"✅ Твой обмен принят! Игрок перешел в твой клуб.\nСписано: {cash} млн €.")
+        
+    except Exception as e:
+        conn.rollback()
+        print(f"Ошибка обмена с комиссией: {e}")
+        await cb.answer("Ошибка базы данных.")
+    finally:
+        conn.close()
+
+
+@dp.callback_query(F.data.startswith("bid_c_"))
+async def start_cash_bargain(cb: types.CallbackQuery, state: FSMContext):
+    lot_id = cb.data.split("_")[2]
+    await state.update_data(bid_lot_id=lot_id)
+    await state.set_state(MarketStates.waiting_for_bid_price)
+    
+    await cb.message.answer("💰 Введите цену (в млн €), которую вы готовы предложить:")
+    await cb.answer() # Убирает "часики" с кнопки
+
+
+@dp.callback_query(F.data.startswith("bid_t_"))
+async def start_trade_bargain(cb: types.CallbackQuery, state: FSMContext):
+    lot_id = int(cb.data.split("_")[2])
+    
+    # ПРОВЕРКА: Не свой ли это лот (на всякий случай)
+    conn = get_db(); c = conn.cursor()
+    c.execute('SELECT user_id FROM squad WHERE id = ?', (lot_id,))
+    res = c.fetchone()
+    conn.close()
+
+    if res and res[1] == "loan_sale":
+        return await cb.answer("🚫 Обмен для арендных игроков недоступен!", show_alert=True)
+    
+    if res and res[0] == cb.from_user.id:
+        return await cb.answer("🚫 Это твой игрок!", show_alert=True)
+
+    await state.update_data(target_lot_id=lot_id)
+    
+    conn = get_db(); c = conn.cursor()
+    c.execute('SELECT id, player_name, rating, pos, status FROM squad WHERE user_id = ?', (cb.from_user.id,))
+    my_squad = c.fetchall()
+    conn.close()
+    
+    if not my_squad:
+        return await cb.answer("❌ У тебя нет игроков для обмена!", show_alert=True)
+
+    kb = InlineKeyboardBuilder()
+    for pid, name, rat, pos, stat in my_squad:
+        prefix = "⭐️ " if stat == "active" else ""
+        kb.button(text=f"{prefix}{name} ({rat}) [{pos}]", callback_data=f"tr_sel_{pid}")
+    
+    kb.adjust(1)
+    await cb.message.answer("Кого из своих игроков предложишь взамен?", reply_markup=kb.as_markup())
+    await state.set_state(MarketStates.waiting_for_trade_player)
+    await cb.answer()
+
+@dp.callback_query(F.data.startswith("player_info_"))
+async def show_player_info(cb: types.CallbackQuery):
+    player_id = int(cb.data.split("_")[2])
+    
+    conn = get_db(); c = conn.cursor()
+    c.execute('''SELECT player_name, rating, pos, market_price FROM squad WHERE id = ?''', (player_id,))
+    res = c.fetchone()
+    conn.close()
+    
+    if not res:
+        return await cb.answer("Игрок не найден!", show_alert=True)
+    
+    name, rat, pos, price = res
+    
+    # Можно добавить описание в зависимости от позиции или рейтинга
+    descriptions = {
+        "GK": "Надежный страж ворот, готовый спасать в безнадежных ситуациях.",
+        "DEF": "Бетон в защите. Пройти его практически невозможно.",
+        "MID": "Маэстро центра поля, видит поле на 360 градусов.",
+        "FWD": "Прирожденный бомбардир. Каждый удар — угроза."
+    }
+    desc = descriptions.get(pos, "Звезда мирового уровня.")
+
+    info_text = (
+        f"🌟 <b>Досье игрока: {name}</b>\n"
+        f"────────────────────\n"
+        f"📊 Рейтинг: <b>{rat}</b>\n"
+        f"🏃 Позиция: <b>{pos}</b>\n"
+        f"💰 Оценка: <b>{price} млн €</b>\n\n"
+        f"📝 <i>{desc}</i>\n"
+        f"────────────────────\n"
+        f"📍 Свободный агент доступен для прямого выкупа или торга с администрацией."
+    )
+    
+    await cb.message.answer(info_text, parse_mode="HTML")
+    await cb.answer()
 
 @dp.callback_query(F.data.startswith("ref_b_"))
 async def refuse_bid_callback(cb: types.CallbackQuery):
@@ -1414,15 +1822,26 @@ async def process_bargain_bid(m: types.Message, state: FSMContext):
 
     # 1. РАССЧИТЫВАЕМ РЫНОЧНЫЙ МИНИМУМ
     market_min = 1
-    if rat >= 90: market_min = 100
-    elif rat >= 85: market_min = 70
-    elif rat >= 80: market_min = 50
-    elif rat >= 75: market_min = 20
-    elif rat >= 70: market_min = 5
+    max_p = 250
 
-    # 2. ДЕЛАЕМ СКИДКУ ДЛЯ ТОРГА (например, разрешаем на 30% дешевле)
-    # Игрок с рейтингом 75 (минимум 20 на рынке) сможет сторговаться до 14
+    if rat >= 95: 
+        market_min, market_max = 150, 250
+    elif rat >= 90: 
+        market_min, market_max = 100, 250
+    elif rat >= 85: 
+        market_min, market_max = 60, 150
+    elif rat >= 80: 
+        market_min, market_max = 30, 100
+    elif rat >= 75: 
+        market_min, market_max = 15, 60
+    elif rat >= 70: 
+        market_min, market_max = 5, 20
+    else:
+        market_min, market_max = 1, 10
+
+    # 2. ДЕЛАЕМ СКИДКУ ДЛЯ ТОРГА
     bargain_min = int(market_min * 0.7) 
+    bargain_max = int(market_max * 1.1)
 
     if bid_price < bargain_min:
         conn.close()
@@ -1431,75 +1850,165 @@ async def process_bargain_bid(m: types.Message, state: FSMContext):
             f"Для рейтинга {rat} даже с торгом нельзя ставить меньше {bargain_min} млн €.\n"
             f"Попробуй предложить цену чуть выше."
         )
-
-    # 3. Если цена адекватная — отправляем предложение продавцу
-    conn.close()
-    await state.clear()
     
-    # Тут твой код отправки сообщения продавцу с кнопками "Принять/Отклонить"
-    try:
-        builder = InlineKeyboardBuilder()
-        builder.button(text="✅ Принять", callback_data=f"a_{lot_id}_{bid_price}_{m.from_user.id}")
-        builder.button(text="❌ Отклонить", callback_data=f"ref_b_{m.from_user.id}")
-        
-        await bot.send_message(
-            seller_id,
-            f"🤝 <b>Предложение по торгу!</b>\n\n"
-            f"За твоего игрока <b>{p_name}</b> ({rat}) предлагают <b>{bid_price} млн €</b>.\n"
-            f"На рынке он стоит минимум {market_min} млн.\n\n"
-            f"Принимаешь?",
-            reply_markup=builder.as_markup(),
+    if bid_price > bargain_max:
+        conn.close()
+        return await m.answer(
+            f"🚫 <b>Цена завышена!</b>\n\n"
+            f"Максимальная цена для игрока с рейтингом {rat} составляет <b>{bargain_max} млн €</b>.\n"
+            f"Даже при торге нельзя предлагать больше этой суммы.",
             parse_mode="HTML"
         )
-        await m.answer(f"✅ Предложение в {bid_price} млн € отправлено владельцу!")
-    except:
-        await m.answer("❌ Не удалось отправить предложение (возможно, бот заблокирован).")
+
+    # ОПРЕДЕЛЯЕМ ПОЛУЧАТЕЛЯ
+    if seller_id == 0:
+        # Если свободный агент, шлем первому админу из списка
+        target_ids = ADMINS if isinstance(ADMINS, list) else [ADMINS]
+        title_text = "🚀 <b>Торг по Свободному Агенту!</b>"
+    else:
+        # Если обычный игрок, шлем ЕГО ВЛАДЕЛЬЦУ
+        target_ids = [seller_id]
+        title_text = "🤝 <b>Предложение по торгу!</b>"
+
+    for t_id in target_ids:
+        try:
+            builder = InlineKeyboardBuilder()
+            builder.button(text="✅ Принять", callback_data=f"a_{lot_id}_{bid_price}_{m.from_user.id}")
+            builder.button(text="❌ Отклонить", callback_data=f"ref_b_{m.from_user.id}")
+            
+            await bot.send_message(
+                t_id,
+                f"{title_text}\n\n"
+                f"За игрока <b>{p_name}</b> ({rat}) предлагают <b>{bid_price} млн €</b>.\n"
+                f"На рынке он стоит минимум {market_min} млн.\n\n"
+                f"Покупатель: {m.from_user.first_name}\n"
+                f"Принимаешь?",
+                reply_markup=builder.as_markup(),
+                parse_mode="HTML"
+            )
+        except Exception as e:
+            print(f"Ошибка отправки на {t_id}: {e}")
+
+    await m.answer(f"✅ Предложение в {bid_price} млн € отправлено владельцу!")
+    await state.clear()
 
 @dp.callback_query(F.data.startswith("a_"))
 async def accept_bid_callback(cb: types.CallbackQuery):
-    await cb.answer("Сделка...")
+    await cb.answer("♻️ Оформление трансфера...")
     parts = cb.data.split("_")
-    lid, price, buyer_id = int(parts[1]), int(parts[2]), int(parts[3])
-    seller_id = cb.from_user.id
+    # a_{lot_id}_{bid_price}_{buyer_id}
+    lid, price_short, buyer_id = int(parts[1]), int(parts[2]), int(parts[3])
 
+    with get_db() as conn:
+        c = conn.cursor()
+        
+        # 1. Получаем данные игрока и текущее системное полугодие
+        c.execute('SELECT value FROM settings WHERE key = "current_half"')
+        ch_res = c.fetchone()
+        current_half = int(ch_res[0]) if ch_res else 1
+
+        c.execute('''SELECT player_name, rating, pos, status, loan_expires_window, user_id 
+                     FROM squad WHERE id = ?''', (lid,))
+        player = c.fetchone()
+        
+        if not player:
+            return await cb.message.edit_text("❌ Ошибка: игрок не найден.")
+        
+        name, rat, pos, old_status, loan_val, seller_id = player
+
+        # Расчет денег
+        full_price = price_short * 1000000
+        net_profit = int(full_price * 0.9) # 90% продавцу
+
+        # 2. Проверка баланса покупателя
+        c.execute('SELECT balance FROM users WHERE user_id = ?', (buyer_id,))
+        b_bal = c.fetchone()
+        if not b_bal or b_bal[0] < full_price:
+            return await cb.message.edit_text("❌ У покупателя нет столько денег.")
+
+        try:
+            # --- ФИНАНСЫ ---
+            c.execute('UPDATE users SET balance = balance - ? WHERE user_id = ?', (full_price, buyer_id))
+            if seller_id != 0:
+                c.execute('UPDATE users SET balance = balance + ? WHERE user_id = ?', (net_profit, seller_id))
+
+            # --- ТРАНСФЕР (Удаление старого -> Создание нового) ---
+            c.execute('DELETE FROM squad WHERE id = ?', (lid,))
+
+            if old_status == "loan_sale":
+                # ЛОГИКА АРЕНДЫ (0.5 или 1 год)
+                # loan_val у тебя может приходить как 1 (полгода) или 2 (год)
+                # Если 0.5 года (1 этап) — возвращаем в следующем полугодии
+                # Если 1 год (2 этапа) — возвращаем через одно (т.е. в это же полугодие, но через круг)
+                
+                if loan_val == 1: # На полгода
+                    expire_at = 2 if current_half == 1 else 1
+                else: # На год
+                    expire_at = current_half
+                
+                c.execute('''INSERT INTO squad (user_id, player_name, rating, pos, status, 
+                                               original_owner_id, loan_expires_window, slot_id)
+                             VALUES (?, ?, ?, ?, "loaned", ?, ?, NULL)''', 
+                          (buyer_id, name, rat, pos, seller_id, expire_at))
+                
+                term_text = "0.5 года" if loan_val == 1 else "1 год"
+                msg = f"🤝 <b>{name}</b> ушел в аренду на {term_text}!"
+            else:
+                # ОБЫЧНАЯ ПРОДАЖА
+                c.execute('''INSERT INTO squad (user_id, player_name, rating, pos, status, slot_id)
+                             VALUES (?, ?, ?, ?, "bench", NULL)''', 
+                          (buyer_id, name, rat, pos))
+                msg = f"✅ <b>{name}</b> продан навсегда!"
+
+            conn.commit()
+
+            # Отчеты
+            await cb.message.edit_text(
+                f"{msg}\n💰 Выручка: +{net_profit // 1000000} млн €", 
+                parse_mode="HTML"
+            )
+            
+            await bot.send_message(
+                buyer_id, 
+                f"🎉 Сделка закрыта! <b>{name}</b> теперь в вашем составе (в запасе).", 
+                parse_mode="HTML"
+            )
+
+        except Exception as e:
+            conn.rollback()
+            await cb.message.answer(f"⚠️ Ошибка трансфера: {e}")
+
+async def process_loan_returns():
     conn = get_db(); c = conn.cursor()
     
-    # РАСЧЕТ КОМИССИИ
-    tax = int(price * 0.10) # 10% налог
-    money_to_seller = price - tax
+    # 1. Находим всех, у кого закончилась аренда (счетчик стал 1 и мы его сейчас обнулим)
+    # original_owner_id — это тот, кому возвращаем
+    c.execute('''SELECT id, user_id, original_owner_id, player_name 
+                 FROM squad 
+                 WHERE original_owner_id IS NOT NULL AND loan_expires_window = 1''')
+    expired_loans = c.fetchall()
 
-    # Проверка баланса покупателя
-    c.execute('SELECT balance FROM users WHERE user_id = ?', (buyer_id,))
-    b_bal = c.fetchone()
-    if not b_bal or b_bal[0] < price:
-        conn.close()
-        return await cb.message.edit_text("❌ У покупателя больше нет денег.")
+    for loan_id, current_renter, owner_id, p_name in expired_loans:
+        # Возвращаем игрока владельцу, сбрасываем аренду и убираем из состава арендодателя
+        c.execute('''UPDATE squad 
+                     SET user_id = ?, original_owner_id = NULL, loan_expires_window = 0, 
+                         status = "bench", slot_id = NULL 
+                     WHERE id = ?''', (owner_id, loan_id))
+        
+        # Уведомляем владельца
+        try:
+            await bot.send_message(owner_id, f"✅ Срок аренды истек! Игрок <b>{p_name}</b> вернулся в ваш клуб.", parse_mode="HTML")
+            # Уведомляем того, кто арендовал
+            await bot.send_message(current_renter, f"⌛ Срок аренды игрока <b>{p_name}</b> истек. Он вернулся к владельцу.", parse_mode="HTML")
+        except: pass
 
-    try:
-        # Списываем у покупателя ПОЛНУЮ цену
-        c.execute('UPDATE users SET balance = balance - ? WHERE user_id = ?', (price, buyer_id))
-        # Начисляем продавцу сумму БЕЗ комиссии
-        c.execute('UPDATE users SET balance = balance + ? WHERE user_id = ?', (money_to_seller, seller_id))
-        
-        # Меняем владельца
-        c.execute('''
-            UPDATE squad SET user_id = ?, status = "bench", market_price = 0, slot_id = NULL 
-            WHERE id = ?
-        ''', (buyer_id, lid))
-        
-        conn.commit()
-        
-        await cb.message.edit_text(
-            f"✅ Сделка закрыта!\nЧистая прибыль: <b>{money_to_seller} млн €</b>\n"
-            f"Налог (10%): {tax} млн €", 
-            parse_mode="HTML"
-        )
-        
-        await bot.send_message(buyer_id, f"🤝 Торг принят! Вы купили игрока за {price} млн €.")
-    except Exception as e:
-        print(f"Ошибка: {e}")
-    finally:
-        conn.close()
+    # 2. Уменьшаем счетчик на 1 для всех остальных активных аренд
+    c.execute('''UPDATE squad 
+                 SET loan_expires_window = loan_expires_window - 1 
+                 WHERE original_owner_id IS NOT NULL AND loan_expires_window > 1''')
+    
+    conn.commit(); conn.close()
+    print(f"🔄 Проверка аренд завершена. Вернулось игроков: {len(expired_loans)}")
 
 @dp.callback_query(F.data.startswith("bargain_"))
 async def bargain_start(cb: types.CallbackQuery, state: FSMContext):
@@ -1675,28 +2184,31 @@ async def buy_player(cb: types.CallbackQuery):
     if not is_transfer_open():
         return await cb.answer("🛑 Трансферное окно закрыто! Покупки временно недоступны.", show_alert=True)
 
-    lot_id = int(cb.data.split("_")[1])  # Извлекаем ID из кнопки
-    buyer_id = cb.from_user.id           # Тот, кто нажал 
+    lot_id = int(cb.data.split("_")[1]) 
+    buyer_id = cb.from_user.id 
     
     conn = get_db()
     c = conn.cursor()
     
-    # 2. Достаем данные (добавил статус, чтобы отличить аренду от продажи)
-    c.execute('SELECT user_id, market_price, player_name, status, loan_expires_window FROM squad WHERE id = ?', (lot_id,))
+    # Достаем данные (включая статус и параметры аренды)
+    c.execute('''SELECT user_id, market_price, player_name, status, loan_expires_window 
+                 FROM squad WHERE id = ?''', (lot_id,))
     res = c.fetchone()
     
     if not res or res[1] <= 0:
         conn.close()
         return await cb.answer("❌ Игрок уже продан или снят с рынка!", show_alert=True)
 
-    seller_id, price, p_name, status, loan_duration = res
+    seller_id, price_short, p_name, status, loan_duration = res
+    
+    # КОНВЕРТАЦИЯ: если в базе балансы типа 90.000.000, а цена 50
+    full_price = price_short * 1000000 
 
-    # 3. ПРОВЕРКА: Не покупает ли он у самого себя
     if seller_id == buyer_id:
         conn.close()
         return await cb.answer("🚫 Это твой собственный игрок!", show_alert=True)
     
-    # 4. Проверяем баланс покупателя
+    # Проверяем баланс покупателя
     c.execute('SELECT balance FROM users WHERE user_id = ?', (buyer_id,))
     buyer_res = c.fetchone()
     if not buyer_res:
@@ -1705,27 +2217,31 @@ async def buy_player(cb: types.CallbackQuery):
     
     buyer_bal = buyer_res[0]
     
-    if buyer_bal < price:
+    if buyer_bal < full_price:
         conn.close()
-        return await cb.answer(f"💰 Недостаточно денег! Нужно {price} млн €, а у тебя {buyer_bal} млн €.", show_alert=True)
+        # Показываем в алерте понятные миллионы
+        return await cb.answer(f"💰 Недостаточно денег! Нужно {price_short} млн €, а у тебя {buyer_bal // 1000000} млн €.", show_alert=True)
 
-    # 5. СЧИТАЕМ НАЛОГ И ДЕНЬГИ
-    tax = int(price * 0.10) 
-    final_seller_money = price - tax
+    # СЧИТАЕМ НАЛОГ (только если продавец не система)
+    tax = int(full_price * 0.10) 
+    final_seller_money = full_price - tax
 
     try:
-        # Списываем и начисляет деньги (логика едина для всех)
-        c.execute('UPDATE users SET balance = balance - ? WHERE user_id = ?', (price, buyer_id))
-        c.execute('UPDATE users SET balance = balance + ? WHERE user_id = ?', (final_seller_money, seller_id))
+        # --- ФИКС БАЛАНСОВ ---
+        # С покупателя списываем всегда
+        c.execute('UPDATE users SET balance = balance - ? WHERE user_id = ?', (full_price, buyer_id))
+        
+        # Продавцу начисляем только если это реальный игрок (не 0)
+        if seller_id != 0:
+            c.execute('UPDATE users SET balance = balance + ? WHERE user_id = ?', (final_seller_money, seller_id))
         
         # --- ЛОГИКА АРЕНДЫ VS ПРОДАЖИ ---
         if status == "loan_sale":
-            # Вычисляем окно возврата
             c.execute('SELECT value FROM settings WHERE key = "window_counter"')
-            current_window = c.fetchone()[0]
+            setting_res = c.fetchone()
+            current_window = setting_res[0] if setting_res else 0
             expire_window = current_window + loan_duration
 
-            # Передаем игрока, но запоминаем оригинал владельца
             c.execute('''
                 UPDATE squad 
                 SET user_id = ?, original_owner_id = ?, status = "bench", 
@@ -1734,7 +2250,6 @@ async def buy_player(cb: types.CallbackQuery):
             ''', (buyer_id, seller_id, expire_window, lot_id))
             deal_type = "в аренду"
         else:
-            # Обычная продажа (обнуляем original_owner_id на всякий случай)
             c.execute('''
                 UPDATE squad 
                 SET user_id = ?, original_owner_id = NULL, status = "bench", 
@@ -1745,30 +2260,31 @@ async def buy_player(cb: types.CallbackQuery):
 
         conn.commit()
 
-        # Сообщение покупателю
+        # УВЕДОМЛЕНИЯ
+        new_bal_display = (buyer_bal - full_price) // 1000000
         await cb.message.edit_text(
-            f"🎉 Поздравляем! Вы взяли <b>{p_name}</b> {deal_type} за <b>{price} млн €</b>!\n"
-            f"Игрок отправлен в ваш запас (📋 Состав).", 
+            f"🎉 Поздравляем! Вы взяли <b>{p_name}</b> {deal_type} за <b>{price_short} млн €</b>!\n"
+            f"Ваш баланс: <b>{new_bal_display} млн €</b>", 
             parse_mode="HTML"
         )
         await cb.answer("Сделка завершена!")
 
-        # 6. УВЕДОМЛЕНИЕ ПРОДАВЦУ
-        try:
-            await bot.send_message(
-                seller_id, 
-                f"💰 <b>Сделка завершена!</b>\n\n"
-                f"Клуб купил/арендовал у вас игрока: <b>{p_name}</b>\n"
-                f"Сумма сделки: <b>{price} млн €</b>\n"
-                f"Получено на счет (после налога 10%): <b>{final_seller_money} млн €</b>",
-                parse_mode="HTML"
-            )
-        except:
-            pass 
+        if seller_id != 0:
+            try:
+                await bot.send_message(
+                    seller_id, 
+                    f"💰 <b>Сделка завершена!</b>\n\n"
+                    f"Клуб купил/арендовал у вас игрока: <b>{p_name}</b>\n"
+                    f"Сумма: <b>{price_short} млн €</b>\n"
+                    f"Зачислено (чистыми): <b>{final_seller_money // 1000000} млн €</b>",
+                    parse_mode="HTML"
+                )
+            except: pass 
 
     except Exception as e:
+        conn.rollback()
         print(f"КРИТИЧЕСКАЯ ОШИБКА ТРАНСФЕРА: {e}")
-        await cb.answer("Произошла ошибка в базе данных.", show_alert=True)
+        await cb.answer("Ошибка базы данных.", show_alert=True)
     finally:
         conn.close()
 
@@ -1814,9 +2330,32 @@ async def show_all_interactive(m: types.Message):
 
 @dp.message(F.text == "💰 Баланс")
 async def bal(m: types.Message):
-    conn = get_db(); c = conn.cursor()
-    c.execute('SELECT balance FROM users WHERE user_id = ?', (m.from_user.id,))
-    await m.answer(f"💰 Баланс: {c.fetchone()[0]} млн €"); conn.close()
+    conn = get_db() 
+    c = conn.cursor()
+    
+    try:
+        c.execute('SELECT balance FROM users WHERE user_id = ?', (m.from_user.id,))
+        res = c.fetchone()
+        
+        raw_balance = res[0] if res else 0
+        
+        # ЛОГИКА ФИКСА: 
+        if raw_balance >= 1000000:
+            clean_balance = int(raw_balance / 1000000)
+        else:
+            clean_balance = raw_balance
+
+        await m.answer(
+            f"💳 Ваш бюджет: <b>{clean_balance} млн €</b>", 
+            parse_mode="HTML"
+        )
+        
+    except Exception as e:
+        print(f"Ошибка при проверке баланса: {e}")
+        await m.answer("⚠️ Не удалось получить данные о балансе.")
+    finally:
+        # Это лечит ошибку "database is locked"
+        conn.close()
 
 @dp.callback_query(F.data == "admin_create_fa")
 async def start_fa_creation(cb: types.CallbackQuery, state: FSMContext):
@@ -3012,6 +3551,7 @@ async def adm(m: types.Message):
     b.button(text="🏃 Дать игрока", callback_data="admin_give_player")
     b.button(text="🎲 Сгенерировать 3-х агентов", callback_data="admin_gen_random_fas")
     b.button(text="🔄 ТО (Открыть/Закрыть)", callback_data="admin_toggle_transfers")
+    b.button(text="📅 Сменить полугодие", callback_data="next_half_season")
     b.button(text="🚫 Выгнать", callback_data="admin_kick_user")
     b.button(text="💰 Выдать монеты", callback_data="admin_give_money")
     b.button(text="🏆 Начать Лигу (Генерация)", callback_data="admin_league_start")
@@ -3021,6 +3561,7 @@ async def adm(m: types.Message):
     b.button(text="🆕 Начать Кубок (20 команд)", callback_data="admin_init_cup")
     b.button(text="⚽️ Запустить тур Кубка", callback_data="run_cup_stage")
     b.button(text="🏆 Провести ФИНАЛ", callback_data="run_cup_final")
+    b.button(text="🚀 Выбросить ТОП-игрока", callback_data="admin_drop_player")
     b.button(text="📢 Сделать рассылку", callback_data="start_broadcast")
     b.button(text="🏁 Завершить сезон и выдать 50кк", callback_data="admin_finish_season")
     b.button(text="🧨 ПОЛНЫЙ СБРОС БАЗЫ", callback_data="admin_full_reset")
@@ -3805,6 +4346,182 @@ def process_league_aftermath(conn):
     conn.commit()
     print("✅ Лазарет обновлен: травмы уменьшены, баны сняты.")
 
+@dp.callback_query(F.data == "admin_drop_player")
+async def admin_drop_start(cb: types.CallbackQuery, state: FSMContext):
+    await cb.message.edit_text("👤 <b>Шаг 1:</b> Введите Имя и Фамилию игрока:", parse_mode="HTML")
+    await state.set_state(AdminMarketStates.waiting_for_name)
+
+@dp.message(AdminMarketStates.waiting_for_name)
+async def admin_set_name(m: types.Message, state: FSMContext):
+    await state.update_data(adm_name=m.text)
+    await m.answer(f"Ок, рейтинг для {m.text} (1-99):")
+    await state.set_state(AdminMarketStates.waiting_for_rating)
+
+@dp.message(AdminMarketStates.waiting_for_rating)
+async def admin_set_rating(m: types.Message, state: FSMContext):
+    if not m.text.isdigit(): return await m.answer("Введите число!")
+    await state.update_data(adm_rat=int(m.text))
+    
+    # Кнопки позиций
+    kb = InlineKeyboardBuilder()
+    for p in ["GK", "DEF", "MID", "FWD"]:
+        kb.button(text=p, callback_data=f"adm_pos_{p}")
+    
+    await m.answer("Выберите позицию:", reply_markup=kb.as_markup())
+    await state.set_state(AdminMarketStates.waiting_for_pos)
+
+@dp.callback_query(F.data.startswith("adm_pos_"), AdminMarketStates.waiting_for_pos)
+async def admin_set_pos(cb: types.CallbackQuery, state: FSMContext):
+    pos = cb.data.split("_")[2]
+    await state.update_data(adm_pos=pos)
+    await cb.message.answer(f"Позиция {pos} принята. Введите цену выставления (млн €):")
+    await state.set_state(AdminMarketStates.waiting_for_price)
+
+@dp.message(AdminMarketStates.waiting_for_price)
+async def admin_finish_drop(m: types.Message, state: FSMContext):
+    if not m.text.isdigit(): 
+        return await m.answer("Введите число!")
+    
+    price = int(m.text)
+    data = await state.get_data()
+    
+    p_name = str(data.get("adm_name"))
+    p_rat = int(data.get("adm_rat"))
+    p_pos = str(data.get("adm_pos"))
+    
+    # СИСТЕМНЫЙ ID ДЛЯ СВОБОДНЫХ АГЕНТОВ
+    # Используем 0, чтобы игрок не попадал ни в чьё меню "Весь состав"
+    SYSTEM_USER_ID = 0 
+
+    conn = get_db(); c = conn.cursor()
+    try:
+        c.execute('''
+            INSERT INTO squad (user_id, player_name, rating, pos, status, market_price) 
+            VALUES (?, ?, ?, ?, 'on_sale', ?)
+        ''', (SYSTEM_USER_ID, p_name, p_rat, p_pos, price))
+        
+        conn.commit()
+        await m.answer(f"✅ {p_name} выставлен на рынок как свободный агент!")
+    except Exception as e:
+        await m.answer(f"❌ Ошибка БД: {e}")
+    finally:
+        conn.close()
+        await state.clear()
+
+@dp.callback_query(F.data == "next_season_half")
+async def next_half_callback(cb: types.CallbackQuery):
+    conn = get_db(); c = conn.cursor()
+    
+    # 1. Проверяем, открыто ли ТО (логика: менять полугодие можно только в перерыве)
+    c.execute('SELECT value FROM settings WHERE key = "transfer_window"')
+    tw = c.fetchone()
+    is_open = int(tw[0]) if tw else 0
+    
+    if is_open == 0:
+        conn.close()
+        return await cb.answer("❌ Смена полугодия доступна только при ОТКРЫТОМ ТО!", show_alert=True)
+
+    # 2. Получаем текущее полугодие и меняем его (1 -> 2 или 2 -> 1)
+    c.execute('SELECT value FROM settings WHERE key = "current_half"')
+    ch = c.fetchone()
+    current = int(ch[0]) if ch else 1
+    new_half = 2 if current == 1 else 1
+    
+    try:
+        # Обновляем системное полугодие
+        c.execute('UPDATE settings SET value = ? WHERE key = "current_half"', (new_half,))
+        
+        # 3. ЛОГИКА ВОЗВРАТА: Ищем всех, чья аренда заканчивается на НОВОМ полугодии
+        # Мы ищем тех, у кого loan_expires_window == new_half
+        c.execute('''SELECT id, player_name, original_owner_id, user_id 
+                     FROM squad 
+                     WHERE status = "loaned" AND loan_expires_window = ?''', (new_half,))
+        to_return = c.fetchall()
+        
+        returned_count = 0
+        for lid, name, owner_id, current_user in to_return:
+            # Возвращаем игрока владельцу, сбрасываем слот и статус
+            c.execute('''UPDATE squad 
+                         SET user_id = ?, 
+                             original_owner_id = NULL, 
+                             status = "bench", 
+                             slot_id = NULL, 
+                             loan_expires_window = 0 
+                         WHERE id = ?''', (owner_id, lid))
+            
+            # Уведомляем (опционально, можно в лог)
+            try:
+                await bot.send_message(owner_id, f"🔙 <b>Возврат!</b> {name} вернулся из аренды.")
+                await bot.send_message(current_user, f"⌛ <b>Аренда окончена!</b> {name} покинул ваш клуб.")
+            except: pass
+            returned_count += 1
+
+        conn.commit()
+        
+        half_text = "ВТОРОЕ (Зима-Весна)" if new_half == 2 else "ПЕРВОЕ (Лето-Осень)"
+        await cb.message.edit_text(
+            f"✅ <b>Этап сезона успешно изменен!</b>\n\n"
+            f"Теперь наступило: <b>{half_text}</b> полугодие.\n"
+            f"Вернулось игроков из аренды: <b>{returned_count}</b>",
+            parse_mode="HTML"
+        )
+
+    except Exception as e:
+        conn.rollback()
+        await cb.answer(f"Ошибка БД: {e}", show_alert=True)
+    finally:
+        conn.close()
+
+@dp.callback_query(F.data == "next_half_season")
+async def next_half_season_handler(cb: types.CallbackQuery):
+    await cb.answer("⏳ Пересчет сезона...")
+    
+    with get_db() as conn:
+        c = conn.cursor()
+        
+        # 1. Узнаем текущее полугодие
+        c.execute('SELECT value FROM settings WHERE key = "current_half"')
+        res = c.fetchone()
+        current = int(res[0]) if res else 1
+        
+        # Переключаем: если было 1 -> станет 2, если было 2 -> станет 1
+        new_half = 2 if current == 1 else 1
+        
+        # 2. Ищем игроков, которые должны вернуться в ЭТОМ новом полугодии
+        c.execute('''SELECT id, player_name, original_owner_id 
+                     FROM squad 
+                     WHERE loan_expires_window = ? AND status = "loaned"''', (new_half,))
+        returned_players = c.fetchall()
+        
+        # 3. Возвращаем игроков "домой"
+        for p_id, p_name, owner_id in returned_players:
+            # Возвращаем владельцу, сбрасываем аренду и убираем из состава (в запас)
+            c.execute('''UPDATE squad 
+                         SET user_id = ?, 
+                             status = "bench", 
+                             original_owner_id = NULL, 
+                             loan_expires_window = 0,
+                             slot_id = NULL 
+                         WHERE id = ?''', (owner_id, p_id))
+            
+            # Опционально: уведомляем владельца
+            try:
+                await bot.send_message(owner_id, f"🔙 Ваш игрок <b>{p_name}</b> вернулся из аренды!", parse_mode="HTML")
+            except: pass
+
+        # 4. Сохраняем новое полугодие в настройки
+        c.execute('UPDATE settings SET value = ? WHERE key = "current_half"', (new_half,))
+        conn.commit()
+
+    # Текст для админа
+    half_text = "Зима/Весна (2-е полугодие)" if new_half == 2 else "Лето/Осень (1-е полугодие)"
+    await cb.message.edit_text(
+        f"✅ <b>Сезон обновлен!</b>\n"
+        f"📅 Текущий этап: {half_text}\n"
+        f"🔄 Вернулось из аренды: {len(returned_players)} чел.",
+        parse_mode="HTML"
+    )
+
 @dp.callback_query(F.data == "admin_league_start")
 async def admin_league_start(cb: types.CallbackQuery):
     if cb.from_user.id not in ADMINS: 
@@ -4015,14 +4732,33 @@ async def admin_gen_random_fas(cb: types.CallbackQuery):
         
         await cb.answer("⏳ Агенты вылетают...")
         
-        first_names = ["Luka", "Kevin", "Erling", "Kylian", "Jude", "Mo", "Harry", "Bruno", "Martin", "Leo", "Didier", "Diogo", "Moises"]
-        last_names = ["Smith", "Gomez", "Silva", "Muller", "Kane", "Sane", "Diaz", "Verratti", "Rowe", "Cantona", "Elneny", "Kiwior", "Tadic"]
+        first_names = [
+            "Luka", "Kevin", "Erling", "Kylian", "Jude", "Mo", "Harry", "Bruno", "Martin", "Leo",
+            "Didier", "Diogo", "Moises", "Declan", "Bukayo", "Virgil", "Trent", "Marcus", "Phil", "Alisson",
+            "Yan", "David", "Robert", "Angel", "Luis", "Karim", "Antoine", "Eden", "Zlatan", "Lamine",
+            "Aaron", "Pedri", "Vinicius", "Rodrygo", "Federico", "Darwin", "Alexis", "Enzo", "Julian", "Lautaro",
+            "Bernardo", "Ruben", "Ederson", "Kingsley", "Leroy", "Jamal", "Leon", "Joshua", "Manuel", "Ilkay", 
+            "Hristo", "Gheorghe", "Pavel", "Andriy", "Ole", "Clarence", "Park", "Benni",
+            "Gianfranco", "Henrik", "Jari", "Davor", "Youri", "Siniša", "Patrik", "Shunsuke", 
+            "Juninho", "Royston", "Guti", "Esteban", "Mauro", "Gaizka", "Santi", "Alvaro", "Marek",
+            "Vander", "Eidur", "Nwankwo", "Taribo", "Landon", "Timmy", "Cobi", "Lothar", "Bixente", "Jaap",
+            "Fabien", "Dino", "Santiago", "Milan", "Dejan", "Tomas", "Hakan", "Emre"
+        ]
+
+        last_names = [
+            "Smith", "Gomez", "Silva", "Muller", "Kane", "Sane", "Diaz", "Verratti", "Rowe", "Cantona",
+            "Elneny", "Kiwior", "Tadic", "Stoichkov", "Hagi","Solskjaer", "Larsson", "Conceição", "Schjelderup", "Malacia"
+            "Litmanen", "Šuker", "Djorkaeff", "Mihajlović", "Berger", "Nakamura", "Ji-sung", "McCarthy", "Pernambucano", "Drenthe",
+            "Guti", "Cambiasso", "Camoranesi", "Mendieta", "Cazorla", "Negredo", "Hamšík", "Karpin", "Gudjohnsen", "Kanu",
+            "West", "Donovan", "Cahill", "Jones", "Matthäus", "Lizarazu", "Stam", "Barthez", "Zoff", "Canizares",
+            "Solari", "Zamorano", "Kean", "Baroš", "Stanković", "Rosický", "Yakin", "Belözoğlu", "Recoba", "Riquelme"                             
+        ]
         
         for _ in range(3):
             name = f"{random.choice(first_names)} {random.choice(last_names)}"
-            rat = random.randint(70, 86)
+            rat = random.randint(75, 86)
             pos = random.choice(["FWD", "MID", "DEF", "GK"])
-            price = 0 if rat < 82 else (10 if rat < 85 else 15)
+            price = 0 if rat < 80 else (10 if rat < 85 else 15)
             
             c.execute('INSERT INTO squad (user_id, player_name, rating, pos, status, market_price, stamina) VALUES (0, ?, ?, ?, "free_agent", ?, 100)', 
                       (name, rat, pos, price))
@@ -4031,7 +4767,7 @@ async def admin_gen_random_fas(cb: types.CallbackQuery):
             b = InlineKeyboardBuilder()
             b.button(text=f"⚡️ ЗАБРАТЬ ({price} млн)", callback_data=f"catch_{fa_id}")
             
-            await bot.send_message(CHAT_ID, f"🔥 АГЕНТ: <b>{name}</b> ({rat})\n💰 Цена: {price} млн", reply_markup=b.as_markup(), parse_mode="HTML")
+            await bot.send_message(SET_CHAT_ID, f"🔥 АГЕНТ: <b>{name}</b> ({rat})\n 🏃 Позиция: <b>{pos}</b>\n 💰 Цена: {price} млн", reply_markup=b.as_markup(), parse_mode="HTML")
         
         conn.commit()
     finally:
@@ -4147,7 +4883,8 @@ async def main():
     
     # 3. Запускаем бота
     print("🚀 Бот запущен...")
-    await dp.start_polling(bot)
+    await dp.start_polling(bot, allowed_updates=["message", "callback_query", "chat_member"])
+    
 
 if __name__ == "__main__":
     asyncio.run(main()) # Эта строка должна быть С ОТСТУПОМ и на новой строке
