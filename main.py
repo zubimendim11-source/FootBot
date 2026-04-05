@@ -243,10 +243,10 @@ CHAT_ID = 5611356552
 from aiogram.client.session.aiohttp import AiohttpSession
 
 # Создаем сессию с указанием прокси PythonAnywhere
-# session = AiohttpSession(proxy="http://proxy.server:3128")
+ session = AiohttpSession(proxy="http://proxy.server:3128")
 
 # # Инициализируем бота с этой сессией
-# bot = Bot(token=TOKEN, session=session)
+ bot = Bot(token=TOKEN, session=session)
 
 
 matches_data = {}
