@@ -5,21 +5,24 @@ TEAM_BALANCES = {
     "Barcelona": 110_000_000,  # Чуть меньше из-за долговых нюансов, но статус топ
     "Bayern": 160_000_000,
     "PSG": 220_000_000,        # Максимальный бюджет
-    "Inter": 90_000_000,
-    "Milan": 85_000_000,
-    "Borussia Dortmund": 95_000_000,
-    "Atletico Madrid": 105_000_000,
-    "Bayer Leverkusen": 85_000_000,
-    "Juventus": 100_000_000,
+    "Inter": 120_000_000,
+    "Milan": 100_000_000,
+    "Borussia Dortmund": 100_000_000,
+    "Atletico Madrid": 120_000_000,
+    "Bayer Leverkusen": 95_000_000,
+    "Juventus": 105_000_000,
 
     # Top Clubs
     "Arsenal": 150_000_000,
-    "Manchester City": 180_000_000,
+    "Man City": 180_000_000,
     "Manchester United": 140_000_000,
     "Liverpool": 130_000_000,
     "Chelsea": 160_000_000,
-    "Tottenham": 110_000_000,
-
+    "Tottenham": 130_000_000,
+    "Ajax": 90_000_000,
+    "Napoli": 100_000_000,
+    "Monaco": 80_000_000,
+    "Athletic Bilbao": 75_000_000,
     # Strong Mid-table
     "Aston Villa": 95_000_000,
     "Newcastle": 120_000_000,
