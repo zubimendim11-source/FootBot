@@ -77,35 +77,49 @@ CLUBS = {
         {"name": "Rafael Leao", "rating": 84, "pos": "FWD"}, {"name": "Gimenez", "rating": 79, "pos": "FWD"}, 
         {"name": "Nkunku", "rating": 81, "pos": "FWD"}
     ]},
-    #   "Bayer Leverkusen": {"emoji": "⚫🔴", "players": [
-    #     {"name": "Blaswich", "rating": 73, "pos": "GK"}, {"name": "Omlin", "rating": 74, "pos": "GK"}, 
-    #     {"name": "Flekken", "rating": 78, "pos": "GK"}, {"name": "Quansah", "rating": 76, "pos": "DEF"}, 
-    #     {"name": "Oermann", "rating": 72, "pos": "DEF"}, {"name": "Andrich", "rating": 79, "pos": "DEF"}, 
-    #     {"name": "Lade", "rating": 78, "pos": "DEF"}, {"name": "Tapsoba", "rating": 82, "pos": "DEF"}, 
-    #     {"name": "Tella", "rating": 78, "pos": "MID"}, {"name": "Arthur", "rating": 73, "pos": "MID"},
-    #     {"name": "Poku", "rating": 76, "pos": "MID"}, {"name": "Lucas Vazquez", "rating": 77, "pos": "MID"},
-    #     {"name": "Aleix Garcia", "rating": 84, "pos": "MID"}, {"name": "Mensah", "rating": 62, "pos": "MID"},
-    #     {"name": "Palacios", "rating": 83, "pos": "MID"}, {"name": "Enzo Fernandez", "rating": 76, "pos": "MID"},
-    #     {"name": "Grimaldo", "rating": 85, "pos": "MID"}, {"name": "Maza", "rating": 78, "pos": "FWD"},
-    #     {"name": "Hofmann", "rating": 77, "pos": "FWD"}, {"name": "Tillman", "rating": 80, "pos": "FWD"},
-    #     {"name": "Terrier", "rating": 79, "pos": "FWD"}, {"name": "Schick", "rating": 85, "pos": "FWD"}, 
-    #     {"name": "Kofane", "rating": 75, "pos": "FWD"}
-    # ]},
-    #   "Juventus": {"emoji": "⚪⚫", "players": [
-    #     {"name": "Di Gregorio", "rating": 81, "pos": "GK"}, {"name": "Pinsoglio", "rating": 69, "pos": "GK"}, 
-    #     {"name": "Perin", "rating": 78, "pos": "GK"}, {"name": "Kalulu", "rating": 80, "pos": "DEF"}, 
-    #     {"name": "Kabal", "rating": 74, "pos": "DEF"}, {"name": "Bremer", "rating": 86, "pos": "DEF"}, 
-    #     {"name": "Gatti", "rating": 80, "pos": "DEF"}, {"name": "L. Kelly", "rating": 77, "pos": "DEF"},
-    #     {"name": "McKennie", "rating": 78, "pos": "MID"}, {"name": "Holm", "rating": 74, "pos": "MID"},
-    #     {"name": "Locatelli", "rating": 84, "pos": "MID"}, {"name": "Miretti", "rating": 75, "pos": "MID"}, 
-    #     {"name": "K. Thuram", "rating": 81, "pos": "MID"}, {"name": "Zhegrova", "rating": 79, "pos": "MID"},
-    #     {"name": "Cambiaso", "rating": 80, "pos": "MID"}, {"name": "Kostic", "rating": 80, "pos": "MID"},
-    #     {"name": "Conceicao", "rating": 79, "pos": "FWD"}, {"name": "Adzic", "rating": 67, "pos": "FWD"}, 
-    #     {"name": "Vlahović", "rating": 81, "pos": "FWD"}, {"name": "Yildiz", "rating": 81, "pos": "FWD"}, 
-    #     {"name": "Koopmeiners", "rating": 80, "pos": "MID"}, {"name": "Milik", "rating": 78, "pos": "FWD"},
-    #     {"name": "Jonathan David", "rating": 81, "pos": "FWD"}, {"name": "Openda", "rating": 82, "pos": "FWD"}, 
-    #     {"name": "Boga", "rating": 75, "pos": "FWD"}
-    # ]},
+
+        "Ajax": {"emoji": "⚪🔴", "players": [
+        {"name": "Paes", "rating": 71, "pos": "GK"}, {"name": "Jaroš", "rating": 72, "pos": "GK"},
+        {"name": "Lucas Rosa", "rating": 71, "pos": "DEF"}, {"name": "Gaaei", "rating": 71, "pos": "DEF"},
+        {"name": "Šutalo", "rating": 77, "pos": "DEF"}, {"name": "Itakura", "rating": 76, "pos": "DEF"},
+        {"name": "Baas", "rating": 77, "pos": "DEF"}, {"name": "Tomiyasu", "rating": 77, "pos": "DEF"},
+        {"name": "Wijndal", "rating": 71, "pos": "DEF"}, {"name": "Jetten", "rating": 62, "pos": "DEF"},
+        {"name": "Zinchenko", "rating": 77, "pos": "DEF"}, {"name": "Regeer", "rating": 73, "pos": "MID"},
+        {"name": "Mokio", "rating": 69, "pos": "MID"}, {"name": "Klaassen", "rating": 76, "pos": "MID"},
+        {"name": "Fitz-Jim", "rating": 72, "pos": "MID"}, {"name": "Steur", "rating": 67, "pos": "MID"}, {"name": "Edvardsen", "rating": 72, "pos": "MID"},
+        {"name": "Berghuis", "rating": 77, "pos": "FWD"}, {"name": "Bounida", "rating": 66, "pos": "FWD"},
+        {"name": "Godts", "rating": 77, "pos": "FWD"}, {"name": "Gloukh", "rating": 77, "pos": "FWD"},
+        {"name": "Weghorst", "rating": 77, "pos": "FWD"}, {"name": "Dolberg", "rating": 77, "pos": "FWD"} , {"name": "Carrizo", "rating": 74, "pos": "FWD"}
+    ]},
+      "Bayer Leverkusen": {"emoji": "⚫🔴", "players": [
+        {"name": "Blaswich", "rating": 73, "pos": "GK"}, {"name": "Omlin", "rating": 74, "pos": "GK"}, 
+        {"name": "Flekken", "rating": 78, "pos": "GK"}, {"name": "Quansah", "rating": 76, "pos": "DEF"}, 
+        {"name": "Oermann", "rating": 72, "pos": "DEF"}, {"name": "Andrich", "rating": 79, "pos": "DEF"}, 
+        {"name": "Lade", "rating": 78, "pos": "DEF"}, {"name": "Tapsoba", "rating": 82, "pos": "DEF"}, 
+        {"name": "Tella", "rating": 78, "pos": "MID"}, {"name": "Arthur", "rating": 73, "pos": "MID"},
+        {"name": "Poku", "rating": 76, "pos": "MID"}, {"name": "Lucas Vazquez", "rating": 77, "pos": "MID"},
+        {"name": "Aleix Garcia", "rating": 84, "pos": "MID"}, {"name": "Mensah", "rating": 62, "pos": "MID"},
+        {"name": "Palacios", "rating": 83, "pos": "MID"}, {"name": "Enzo Fernandez", "rating": 76, "pos": "MID"},
+        {"name": "Grimaldo", "rating": 85, "pos": "MID"}, {"name": "Maza", "rating": 78, "pos": "FWD"},
+        {"name": "Hofmann", "rating": 77, "pos": "FWD"}, {"name": "Tillman", "rating": 80, "pos": "FWD"},
+        {"name": "Terrier", "rating": 79, "pos": "FWD"}, {"name": "Schick", "rating": 85, "pos": "FWD"}, 
+        {"name": "Kofane", "rating": 75, "pos": "FWD"}
+    ]},
+      "Juventus": {"emoji": "⚪⚫", "players": [
+        {"name": "Di Gregorio", "rating": 81, "pos": "GK"}, {"name": "Pinsoglio", "rating": 69, "pos": "GK"}, 
+        {"name": "Perin", "rating": 78, "pos": "GK"}, {"name": "Kalulu", "rating": 80, "pos": "DEF"}, 
+        {"name": "Kabal", "rating": 74, "pos": "DEF"}, {"name": "Bremer", "rating": 86, "pos": "DEF"}, 
+        {"name": "Gatti", "rating": 80, "pos": "DEF"}, {"name": "L. Kelly", "rating": 77, "pos": "DEF"},
+        {"name": "McKennie", "rating": 78, "pos": "MID"}, {"name": "Holm", "rating": 74, "pos": "MID"},
+        {"name": "Locatelli", "rating": 84, "pos": "MID"}, {"name": "Miretti", "rating": 75, "pos": "MID"}, 
+        {"name": "K. Thuram", "rating": 81, "pos": "MID"}, {"name": "Zhegrova", "rating": 79, "pos": "MID"},
+        {"name": "Cambiaso", "rating": 80, "pos": "MID"}, {"name": "Kostic", "rating": 80, "pos": "MID"},
+        {"name": "Conceicao", "rating": 79, "pos": "FWD"}, {"name": "Adzic", "rating": 67, "pos": "FWD"}, 
+        {"name": "Vlahović", "rating": 81, "pos": "FWD"}, {"name": "Yildiz", "rating": 81, "pos": "FWD"}, 
+        {"name": "Koopmeiners", "rating": 80, "pos": "MID"}, {"name": "Milik", "rating": 78, "pos": "FWD"},
+        {"name": "Jonathan David", "rating": 81, "pos": "FWD"}, {"name": "Openda", "rating": 82, "pos": "FWD"}, 
+        {"name": "Boga", "rating": 75, "pos": "FWD"}
+    ]},
         "Borussia Dortmund": {"emoji": "🟡⚫", "players": [
         {"name": "Kobel", "rating": 86, "pos": "GK"}, {"name": "Meyer", "rating": 75, "pos": "GK"}, 
         {"name": "Drewes", "rating": 75, "pos": "GK"}, {"name": "Bensebaini", "rating": 79, "pos": "DEF"}, 
@@ -195,7 +209,76 @@ CLUBS = {
         {"name": "Isak", "rating": 87, "pos": "FWD"}
     ]},
 
-    #  "Tottenham": {"emoji": "⚪", "players": [
+        "Newcastle": {"emoji": "🦓", "players": [
+        {"name": "Pope", "rating": 80, "pos": "GK"}, {"name": "Ramsdale", "rating": 77, "pos": "GK"},
+        {"name": "Trippier", "rating": 79, "pos": "DEF"}, {"name": "Livramento", "rating": 80, "pos": "DEF"},
+        {"name": "Thiaw", "rating": 81, "pos": "DEF"}, {"name": "Schär", "rating": 83, "pos": "DEF"}, {"name": "Krafth", "rating": 72, "pos": "DEF"},
+        {"name": "Burn", "rating": 80, "pos": "DEF"}, {"name": "Botman", "rating": 82, "pos": "DEF"},
+        {"name": "Hall", "rating": 81, "pos": "DEF"}, {"name": "Murphy", "rating": 65, "pos": "DEF"},
+        {"name": "Tonali", "rating": 85, "pos": "MID"}, {"name": "Ramsey", "rating": 77, "pos": "MID"},
+        {"name": "Willock", "rating": 76, "pos": "MID"}, {"name": "Miley", "rating": 76, "pos": "MID"},
+        {"name": "Bruno Guimarães", "rating": 86, "pos": "MID"}, {"name": "Joelinton", "rating": 81, "pos": "MID"},
+        {"name": "Barnes", "rating": 80, "pos": "MID"}, {"name": "Murphy", "rating": 80, "pos": "MID"},
+        {"name": "Gordon", "rating": 82, "pos": "FWD"}, {"name": "Woltemade", "rating": 80, "pos": "FWD"}, {"name": "Elanga", "rating": 79, "pos": "FWD"},
+        {"name": "Osula", "rating": 73, "pos": "FWD"}, {"name": "Wissa", "rating": 82, "pos": "FWD"}
+    ]},
+
+        "Manchester United": {"emoji": "🔴", "players": [
+        {"name": "Lammens", "rating": 80, "pos": "GK"}, {"name": "Bayindir", "rating": 75, "pos": "GK"}, {"name": "Heaton", "rating": 67, "pos": "GK"},
+        {"name": "Dalot", "rating": 78, "pos": "DEF"}, {"name": "Mazraoui", "rating": 80, "pos": "DEF"}, {"name": "Heaven", "rating": 73, "pos": "DEF"}, {"name": "León", "rating": 64, "pos": "DEF"},
+        {"name": "Yoro", "rating": 78, "pos": "DEF"}, {"name": "De Ligt", "rating": 82, "pos": "DEF"}, {"name": "Dorgu", "rating": 77, "pos": "MID"},
+        {"name": "Maguire", "rating": 81, "pos": "DEF"}, {"name": "Martinez", "rating": 81, "pos": "DEF"},
+        {"name": "Shaw", "rating": 79, "pos": "DEF"}, {"name": "Malacia", "rating": 75, "pos": "DEF"},
+        {"name": "Casemiro", "rating": 82, "pos": "MID"}, {"name": "Ugarte", "rating": 78, "pos": "MID"}, {"name": "Mount", "rating": 78, "pos": "MID"},
+        {"name": "Mainoo", "rating": 78, "pos": "MID"}, {"name": "Bruno Fernandes", "rating": 88, "pos": "MID"},
+        {"name": "Amad", "rating": 80, "pos": "FWD"}, {"name": "Matheus Cunha", "rating": 83, "pos": "FWD"},
+        {"name": "Mbeumo", "rating": 85, "pos": "FWD"}, {"name": "Sesko", "rating": 80, "pos": "FWD"}, {"name": "Zirkzee", "rating": 77, "pos": "FWD"}
+    ]},
+
+        "Monaco": {"emoji": "👑", "players": [
+        {"name": "Hrádecký", "rating": 80, "pos": "GK"}, {"name": "Köhn", "rating": 77, "pos": "GK"},
+        {"name": "Vanderson", "rating": 77, "pos": "DEF"}, {"name": "Diatta", "rating": 74, "pos": "DEF"},
+        {"name": "Kehrer", "rating": 78, "pos": "DEF"}, {"name": "Zakaria", "rating": 81, "pos": "DEF"},
+        {"name": "Dier", "rating": 78, "pos": "DEF"}, {"name": "Faes", "rating": 74, "pos": "DEF"},
+        {"name": "Caio Henrique", "rating": 77, "pos": "DEF"}, {"name": "Ansu Fati", "rating": 75, "pos": "FWD"},
+        {"name": "Ouattara", "rating": 72, "pos": "MID"}, {"name": "Adingra", "rating": 76, "pos": "MID"},
+        {"name": "Idumbo", "rating": 68, "pos": "MID"}, {"name": "Minamino", "rating": 78, "pos": "FWD"},
+        {"name": "Camara", "rating": 79, "pos": "MID"}, {"name": "Pogba", "rating": 78, "pos": "MID"},
+        {"name": "Bamba", "rating": 69, "pos": "MID"}, {"name": "Coulibaly", "rating": 71, "pos": "MID"},
+        {"name": "Akliouche", "rating": 80, "pos": "MID"}, {"name": "Golovin", "rating": 79, "pos": "MID"}, {"name": "Teze", "rating": 77, "pos": "MID"},
+        {"name": "Balogun", "rating": 79, "pos": "FWD"}, {"name": "Biereth", "rating": 77, "pos": "FWD"}
+    ]},
+
+        "Athletic Bilbao": {"emoji": "⛪", "players": [
+        {"name": "Unai Simón", "rating": 84, "pos": "GK"}, {"name": "Álex Padilla", "rating": 69, "pos": "GK"},
+        {"name": "Areso", "rating": 77, "pos": "DEF"}, {"name": "Gorosabel", "rating": 76, "pos": "DEF"}, {"name": "Lekue", "rating": 73, "pos": "DEF"},
+        {"name": "Vivian", "rating": 83, "pos": "DEF"}, {"name": "Aitor Paredes", "rating": 78, "pos": "DEF"},
+        {"name": "Egiluz", "rating": 70, "pos": "DEF"}, {"name": "Laporte", "rating": 82, "pos": "DEF"},
+        {"name": "Iker Monreal", "rating": 59, "pos": "DEF"}, {"name": "Yuri Berchiche", "rating": 79, "pos": "DEF"},
+        {"name": "Boiro", "rating": 73, "pos": "DEF"}, {"name": "Ruiz de Galarreta", "rating": 80, "pos": "MID"}, {"name": "Beñat Prados", "rating": 77, "pos": "MID"},
+        {"name": "Rego", "rating": 71, "pos": "MID"}, {"name": "Jauregizar", "rating": 80, "pos": "MID"},
+        {"name": "Vesga", "rating": 73, "pos": "MID"}, {"name": "Sancet", "rating": 82, "pos": "MID"},
+        {"name": "Unai Gómez", "rating": 73, "pos": "MID"}, {"name": "Iñaki Williams", "rating": 82, "pos": "FWD"},
+        {"name": "Berenguer", "rating": 81, "pos": "FWD"}, {"name": "Nico Williams", "rating": 85, "pos": "FWD"},
+        {"name": "Nico Serrano", "rating": 70, "pos": "FWD"}, {"name": "Guruzeta", "rating": 78, "pos": "FWD"},
+        {"name": "Izeta", "rating": 71, "pos": "FWD"}, {"name": "Maroan", "rating": 73, "pos": "FWD"},
+    ]},
+
+        "Napoli": {"emoji": "🫏", "players": [
+        {"name": "Milinković-Savić", "rating": 79, "pos": "GK"}, {"name": "Meret", "rating": 82, "pos": "GK"},
+        {"name": "Buongiorno", "rating": 82, "pos": "DEF"}, {"name": "Rrahmani", "rating": 83, "pos": "DEF"},
+        {"name": "Juan Jesus", "rating": 75, "pos": "DEF"}, {"name": "Beukema", "rating": 77, "pos": "DEF"}, {"name": "Di Lorenzo", "rating": 83, "pos": "DEF"},
+        {"name": "Politano", "rating": 81, "pos": "MID"}, {"name": "Vergara", "rating": 67, "pos": "MID"},
+        {"name": "Lobotka", "rating": 83, "pos": "MID"}, {"name": "Olivera", "rating": 77, "pos": "MID"},
+        {"name": "Gilmour", "rating": 74, "pos": "MID"}, {"name": "Zambo Anguissa", "rating": 83, "pos": "MID"},
+        {"name": "Spinazzola", "rating": 80, "pos": "MID"}, {"name": "David Neres", "rating": 81, "pos": "MID"},
+        {"name": "Elmas", "rating": 77, "pos": "MID"}, {"name": "Miguel Gutiérrez", "rating": 81, "pos": "MID"},
+        {"name": "McTominay", "rating": 86, "pos": "MID"}, {"name": "De Bruyne", "rating": 87, "pos": "MID"},
+        {"name": "Alisson", "rating": 68, "pos": "FWD"}, {"name": "Højlund", "rating": 77, "pos": "FWD"},
+        {"name": "Giovane", "rating": 68, "pos": "FWD"}, {"name": "Lukaku", "rating": 83, "pos": "FWD"},
+    ]}
+
+    #     "Tottenham": {"emoji": "⚪", "players": [
     #     {"name": "Vicario", "rating": 82, "pos": "GK"}, {"name": "Kinsky", "rating": 75, "pos": "GK"},
     #     {"name": "Pedro Porro", "rating": 82, "pos": "DEF"}, {"name": "Danso", "rating": 79, "pos": "DEF"},
     #     {"name": "Romero", "rating": 83, "pos": "DEF"}, {"name": "Dragusin", "rating": 75, "pos": "DEF"}, 
@@ -212,17 +295,6 @@ CLUBS = {
     #     {"name": "Richarlison", "rating": 79, "pos": "FWD"}
     # ]},
 
-#         "Manchester United": {"emoji": "🔴", "players": [
-#         {"name": "Lammens", "rating": 80, "pos": "GK"}, {"name": "Bayindir", "rating": 75, "pos": "GK"}, {"name": "Heaton", "rating": 67, "pos": "GK"},
-#         {"name": "Dalot", "rating": 78, "pos": "DEF"}, {"name": "Mazraoui", "rating": 80, "pos": "DEF"}, {"name": "Heaven", "rating": 73, "pos": "DEF"}, {"name": "León", "rating": 64, "pos": "DEF"},
-#         {"name": "Yoro", "rating": 78, "pos": "DEF"}, {"name": "De Ligt", "rating": 82, "pos": "DEF"}, {"name": "Dorgu", "rating": 77, "pos": "MID"},
-#         {"name": "Maguire", "rating": 81, "pos": "DEF"}, {"name": "Martinez", "rating": 81, "pos": "DEF"},
-#         {"name": "Shaw", "rating": 79, "pos": "DEF"}, {"name": "Malacia", "rating": 75, "pos": "DEF"},
-#         {"name": "Casemiro", "rating": 82, "pos": "MID"}, {"name": "Ugarte", "rating": 78, "pos": "MID"}, {"name": "Mount", "rating": 78, "pos": "MID"},
-#         {"name": "Mainoo", "rating": 78, "pos": "MID"}, {"name": "Bruno Fernandes", "rating": 88, "pos": "MID"},
-#         {"name": "Amad", "rating": 80, "pos": "FWD"}, {"name": "Matheus Cunha", "rating": 83, "pos": "FWD"},
-#         {"name": "Mbeumo", "rating": 85, "pos": "FWD"}, {"name": "Sesko", "rating": 80, "pos": "FWD"}, {"name": "Zirkzee", "rating": 77, "pos": "FWD"}
-#     ]},
 #         "Aston Villa": {"emoji": "🦁", "players": [
 #         {"name": "Martínez", "rating": 85, "pos": "GK"}, {"name": "Bizot", "rating": 78, "pos": "GK"},
 #         {"name": "Cash", "rating": 81, "pos": "DEF"}, {"name": "Andrés G.", "rating": 73, "pos": "DEF"},
@@ -323,20 +395,6 @@ CLUBS = {
 #         {"name": "Ta Bi", "rating": 68, "pos": "MID"}, {"name": "Le Fée", "rating": 78, "pos": "FWD"},
 #         {"name": "Mundle", "rating": 71, "pos": "FWD"}, {"name": "Brobbey", "rating": 77, "pos": "FWD"},
 #         {"name": "Isidor", "rating": 75, "pos": "FWD"},{"name": "Mayenda", "rating": 72, "pos": "FWD"},
-#     ]},
-
-#         "Newcastle": {"emoji": "🦓", "players": [
-#         {"name": "Pope", "rating": 80, "pos": "GK"}, {"name": "Ramsdale", "rating": 77, "pos": "GK"},
-#         {"name": "Trippier", "rating": 79, "pos": "DEF"}, {"name": "Livramento", "rating": 80, "pos": "DEF"},
-#         {"name": "Thiaw", "rating": 81, "pos": "DEF"}, {"name": "Schär", "rating": 83, "pos": "DEF"}, {"name": "Krafth", "rating": 72, "pos": "DEF"},
-#         {"name": "Burn", "rating": 80, "pos": "DEF"}, {"name": "Botman", "rating": 82, "pos": "DEF"},
-#         {"name": "Hall", "rating": 81, "pos": "DEF"}, {"name": "Murphy", "rating": 65, "pos": "DEF"},
-#         {"name": "Tonali", "rating": 85, "pos": "MID"}, {"name": "Ramsey", "rating": 77, "pos": "MID"},
-#         {"name": "Willock", "rating": 76, "pos": "MID"}, {"name": "Miley", "rating": 76, "pos": "MID"},
-#         {"name": "Bruno Guimarães", "rating": 86, "pos": "MID"}, {"name": "Joelinton", "rating": 81, "pos": "MID"},
-#         {"name": "Barnes", "rating": 80, "pos": "MID"}, {"name": "Murphy", "rating": 80, "pos": "MID"},
-#         {"name": "Gordon", "rating": 82, "pos": "FWD"}, {"name": "Woltemade", "rating": 80, "pos": "FWD"}, {"name": "Elanga", "rating": 79, "pos": "FWD"},
-#         {"name": "Osula", "rating": 73, "pos": "FWD"}, {"name": "Wissa", "rating": 82, "pos": "FWD"}
 #     ]},
 
 #         "Bournemouth": {"emoji": "🍒", "players": [
