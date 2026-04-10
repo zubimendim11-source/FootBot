@@ -259,7 +259,7 @@ TOKEN = "8784991908:AAEBvprrJSu2SWidbaBlB8uoo265TfPRLTs"
 bot = Bot(token=TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
 dp.callback_query.outer_middleware(limit_manager)
-ADMINS = [5611356552, 1812184322, 8298736255]
+ADMINS = [5611356552]
 SET_CHAT_ID = -1003513118924  
 CHAT_ID = 5611356552    
 # -1003556034012, - тест чат
