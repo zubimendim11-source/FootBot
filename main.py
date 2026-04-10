@@ -22,6 +22,9 @@ from aiogram import Router
 from aiogram.exceptions import TelegramRetryAfter, TelegramForbiddenError
 from balances import TEAM_BALANCES
 from aiogram.filters.chat_member_updated import ChatMemberUpdatedFilter, IS_NOT_MEMBER, MEMBER
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
+
+scheduler = AsyncIOScheduler()
 
 processing_catches = set()
 already_caught = set()
@@ -33,6 +36,22 @@ class AdminMarketStates(StatesGroup):
     waiting_for_rating = State()
     waiting_for_pos = State()
     waiting_for_price = State()
+
+class AdminUpgrade(StatesGroup):
+    waiting_for_club = State()
+    waiting_for_player = State()
+    waiting_for_amount = State()
+
+async def check_ownership(cb: types.CallbackQuery, player_id):
+    """Универсальная проверка: если игрок не твой — вернет False и покажет алерт"""
+    conn = get_db(); c = conn.cursor()
+    c.execute('SELECT user_id FROM squad WHERE id = ?', (player_id,))
+    row = c.fetchone()
+    conn.close()
+    if not row or int(row[0]) != cb.from_user.id:
+        await cb.answer("🚫 Это не твой игрок! Нельзя трогать чужой контент.", show_alert=True)
+        return False
+    return True
 
 def init_db():   
     conn = get_db()
@@ -55,7 +74,11 @@ def init_db():
         daily_catch INTEGER DEFAULT 0,
         last_match TEXT,
         last_recovery TEXT,
-        chat_id INTEGER
+        chat_id INTEGER,
+        league_wins INTEGER DEFAULT 0,
+        league_draws INTEGER DEFAULT 0,
+        league_losses INTEGER DEFAULT 0,
+        league_goals INTEGER DEFAULT 0
     )''')
 
     # 2. ТАБЛИЦА СОСТАВА (SQUAD)
@@ -123,26 +146,36 @@ def init_db():
     # 5. ТАБЛИЦА НАСТРОЕК
     c.execute('CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value INTEGER)')
 
-    # --- ПРОВЕРКА И ДОБАВЛЕНИЕ КОЛОНОК (МИГРАЦИИ) ---
+    # --- МИГРАЦИИ (ПРОВЕРКА КОЛОНОК) ---
+    
+    # 1. Миграции для SQUAD
     c.execute("PRAGMA table_info(squad)")
     squad_cols = [col[1] for col in c.fetchall()]
-    
-    # Список колонок, которые нужно проверить и добавить если их нет
-    migrations = [
+    squad_migrations = [
         ('original_owner_id', 'INTEGER DEFAULT NULL'),
         ('loan_expires_window', 'INTEGER DEFAULT 0'),
         ('is_banned', 'INTEGER DEFAULT 0'),
         ('injury_remaining', 'INTEGER DEFAULT 0'),
         ('loan_to', 'INTEGER DEFAULT NULL'),
-        ('loan_term', 'INTEGER DEFAULT 0')
+        ('loan_term', 'INTEGER DEFAULT 0'),
+        ('training_until', 'TEXT DEFAULT NULL')
     ]
-
-    for col_name, col_type in migrations:
+    for col_name, col_type in squad_migrations:
         if col_name not in squad_cols:
-            try:
-                c.execute(f'ALTER TABLE squad ADD COLUMN {col_name} {col_type}')
-            except Exception as e:
-                print(f"❌ Ошибка при добавлении {col_name}: {e}")
+            c.execute(f'ALTER TABLE squad ADD COLUMN {col_name} {col_type}')
+
+    # 2. Миграции для USERS (колонки Лиги)
+    c.execute("PRAGMA table_info(users)")
+    user_cols = [col[1] for col in c.fetchall()]
+    user_migrations = [
+        ('league_wins', 'INTEGER DEFAULT 0'),
+        ('league_draws', 'INTEGER DEFAULT 0'),
+        ('league_losses', 'INTEGER DEFAULT 0'),
+        ('league_goals', 'INTEGER DEFAULT 0')
+    ]
+    for col_name, col_type in user_migrations:
+        if col_name not in user_cols:
+            c.execute(f'ALTER TABLE users ADD COLUMN {col_name} {col_type}')
 
     # --- ИНИЦИАЛИЗАЦИЯ НАСТРОЕК ---
     c.execute('INSERT OR IGNORE INTO settings (key, value) VALUES ("transfer_window", 0)')
@@ -158,8 +191,9 @@ def init_db():
 def get_main_kb(user_id: int):
     b = ReplyKeyboardBuilder()
     b.button(text="💰 Баланс"); b.button(text="📋 Состав")
-    b.button(text="📋 Весь состав"); b.button(text="🏥 Лазарет и Дисквалификации")
+    b.button(text="📋 Весь состав"); b.button(text="📦 Вне состава")
     b.button(text="🚀 Рынок"); b.button(text="⚽️ Играть (Бот)")
+    b.button(text="🏋️‍♂️ Отправить на тренировку")
     b.button(text="📊 Статистика"); b.button(text="📝 Записаться в Лигу")
     b.button(text="🏆 Таблица"); b.button(text="📅 Мои матчи")
     b.button(text="🖼 Сетка Кубка")
@@ -206,24 +240,16 @@ class ThrottlingMiddleware(BaseMiddleware):
             await asyncio.sleep(e.retry_after)
             return await handler(event, data) # Повторная попытка
 
-@router.callback_query()
-async def handle_all_callbacks(callback: types.CallbackQuery):
-    # Разделяем данные кнопки (например, "squad_tactic:12345678")
-    data_parts = callback.data.split(":")
-    
-    # Если в кнопке есть ID (вторая часть после двоеточия)
-    if len(data_parts) > 1:
-        owner_id = int(data_parts[-1]) # Берем ID владельца из данных кнопки
-        
-        # ГЛАВНАЯ ПРОВЕРКА:
-        if callback.from_user.id != owner_id:
-            # Показываем уведомление ТОЛЬКО тому, кто нажал не вовремя
-            await callback.answer("Это не твой состав! ❌ Управляй своим через команду /squad", show_alert=True)
-            return # Дальше код не идет, кнопка для чужака не сработает
-
-    # --- Дальше твоя обычная логика для владельца ---
-    if data_parts[0] == "squad_tactic":
-        await callback.message.edit_text("Выбирай тактику...")
+# @router.callback_query()
+# async def handle_all_callbacks(callback: types.CallbackQuery):
+#     # Проверяем, есть ли двоеточие (для тактики и прочего)
+#     if ":" in callback.data:
+#         data_parts = callback.data.split(":")
+#         owner_id_str = data_parts[-1]
+#         if owner_id_str.isdigit():
+#             if callback.from_user.id != int(owner_id_str):
+#                 await callback.answer("Это не твой состав! ❌", show_alert=True)
+#                 return
 
 # Создаем экземпляр, чтобы к нему можно было обращаться из админки
 limit_manager = CatchLimitMiddleware()
@@ -233,7 +259,7 @@ TOKEN = "8784991908:AAEBvprrJSu2SWidbaBlB8uoo265TfPRLTs"
 bot = Bot(token=TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
 dp.callback_query.outer_middleware(limit_manager)
-ADMINS = [5611356552]
+ADMINS = [5611356552, 1812184322, 8298736255]
 SET_CHAT_ID = -1003513118924  
 CHAT_ID = 5611356552    
 # -1003556034012, - тест чат
@@ -243,10 +269,10 @@ CHAT_ID = 5611356552
 from aiogram.client.session.aiohttp import AiohttpSession
 
 # Создаем сессию с указанием прокси PythonAnywhere
-session = AiohttpSession(proxy="http://proxy.server:3128")
+# session = AiohttpSession(proxy="http://proxy.server:3128")
 
-# # Инициализируем бота с этой сессией
-bot = Bot(token=TOKEN, session=session)
+# Инициализируем бота с этой сессией
+# bot = Bot(token=TOKEN, session=session)
 
 
 matches_data = {}
@@ -257,23 +283,57 @@ async def welcome_new_member_service(message: types.Message):
         return
     
     for user in message.new_chat_members:
-        # ПРОВЕРКА: Если есть юзернейм — пишем через @, если нет — через ID
         if user.username:
             mention = f"@{user.username}"
         else:
             mention = f"<a href='tg://user?id={user.id}'>{user.first_name}</a>"
         
         text = (
-            f"🏔 <b>ВНИМАНИЕ, {mention}!</b>\n\n"
-            f"Ты зачислен в <b>NORTH DIVISION</b>. Здесь дисциплина важнее таланта.\n\n"
-            f"📜 <b>ИНСТРУКЦИЯ:</b>\n"
-            f"— Активируй бота и изучи рынок.\n"
-            f"— Любые нарушения устава караются исключением.\n\n"
-            f"<i>Строго следуй курсу и побеждай.</i>\n\n"
-            f"🤝 <b>Командующий:</b> @North_Officail ⚡️"
+            f"⚡️ <b>НОВОЕ ПОПОЛНЕНИЕ: {mention}</b>\n"
+            f"————————————————————\n"
+            f"Добро пожаловать в <b>NORTH DIVISION</b>. Здесь не играют в футбол — здесь за него сражаются. "
+            f"Твой путь начинается с этого момента.\n\n"
+            f"📍 <b>ПЕРВЫМ ДЕЛОМ:</b>\n"
+            f"Напиши в чат команду <code>!хелп</code> — там собраны все инструменты управления твоим штабом и составом. "
+            f"Изучи её внимательно, чтобы не остаться на скамейке запасных.\n\n"
+            f"🛡 <b>ПРАВИЛО ДИВИЗИОНА:</b>\n"
+            f"Дисциплина — твой главный союзник. Рынок не прощает ошибок, а лига не терпит слабых.\n\n"
+            f"🤝 <b>Связь с командованием:</b> @North_Officail\n"
+            f"————————————————————\n"
+            f"<i>Вводи <code>!хелп</code> и приступай к работе. Удачи.</i>"
         )
         
         await message.answer(text, parse_mode="HTML")
+
+@dp.message(F.text == "!клубы")
+async def show_all_clubs(message: types.Message):
+    conn = get_db(); c = conn.cursor()
+    
+    c.execute('''
+        SELECT DISTINCT u.username, u.user_id, u.club 
+        FROM users u 
+        WHERE u.club IS NOT NULL AND u.club != ''
+        ORDER BY u.club ASC
+    ''')
+    rows = c.fetchall()
+    conn.close()
+
+    if not rows:
+        return await message.answer("<b>🏟 Клубы еще не зарегистрированы.</b>", parse_mode="HTML")
+
+    text = "<b>🏆 СПИСОК ВСЕХ КЛУБОВ:</b>\n\n"
+    
+    for username, uid, club_name in rows:
+        if username:
+            owner_display = f"@{username}"
+        else:
+            owner_display = f"Владелец клуба"
+            
+        mention = f'<a href="tg://user?id={uid}">{owner_display}</a>'
+        
+        text += f"⚽️ <b>{club_name}</b> — {mention}\n"
+
+    await message.answer(text, parse_mode="HTML", disable_web_page_preview=True)
 
 @dp.message(F.text == "🖼 Сетка Кубка")
 async def show_cup_grid_message(m: types.Message):
@@ -317,6 +377,210 @@ async def admin_init_cup(cb: types.CallbackQuery):
     
     conn.commit(); conn.close()
     await cb.message.answer("🏆 <b>Кубок инициализирован!</b>\nСформированы пары Плей-ин.", parse_mode="HTML")
+
+async def training_done_callback(bot, user_id, player_id, old_rating):
+    conn = get_db(); c = conn.cursor()
+    
+    # 1. Получаем актуальные данные игрока (используем rating вместо rat)
+    c.execute('SELECT player_name, rating FROM squad WHERE id = ?', (player_id,))
+    player = c.fetchone()
+    
+    if player:
+        name, current_rating = player
+        new_rating = current_rating + 1
+        
+        # 2. Повышаем рейтинг и снимаем метку тренировки
+        c.execute('UPDATE squad SET rating = ?, training_until = NULL WHERE id = ?', (new_rating, player_id))
+        conn.commit()
+        
+        # 3. Отправляем пуш-уведомление
+        text = (f"✅ <b>ВНИМАНИЕ!</b>\n\n"
+                f"👤 <b>{name}</b> закончил курс тренировок и вернулся в состав!\n"
+                f"📈 Улучшение: {old_rating} ➡️ <b>{new_rating}</b>")
+        
+        try:
+            await bot.send_message(user_id, text, parse_mode="HTML")
+        except Exception as e:
+            print(f"Не удалось отправить пуш: {e}")
+            
+    conn.close()
+
+@dp.message(F.text == "🏋️‍♂️ Отправить на тренировку")
+async def training_selection_list(message: types.Message):
+    user_id = message.from_user.id
+    conn = get_db(); c = conn.cursor()
+    
+    # Берем тех, кто в клубе, не травмирован, не на рынке и не на тренировке
+    c.execute('''SELECT id, player_name, rating, pos 
+                 FROM squad 
+                 WHERE user_id = ? AND training_until IS NULL AND injury_remaining = 0 AND status != 'on_sale'
+                 ORDER BY rating DESC''', (user_id,))
+    players = c.fetchall()
+    conn.close()
+
+    if not players:
+        return await message.answer("📭 У вас нет доступных для тренировки игроков (все заняты или на рынке).")
+
+    b = InlineKeyboardBuilder()
+    for p in players:
+        b.button(text=f"{p[1]} ({p[2]})", callback_data=f"train_pl_{p[0]}")
+    
+    b.adjust(1)
+    await message.answer("🏋️‍♂️ <b>Выберите игрока для тренировки:</b>", reply_markup=b.as_markup(), parse_mode="HTML")
+
+@dp.callback_query(F.data.startswith("train_pl_"))
+async def confirm_training(cb: types.CallbackQuery):
+    pid = cb.data.replace("train_pl_", "")
+    conn = get_db(); c = conn.cursor()
+    # Используем rating
+    c.execute('SELECT player_name, rating FROM squad WHERE id = ?', (pid,))
+    res = c.fetchone()
+    conn.close()
+    
+    if not res: return
+    name, rat = res
+    
+    # Считаем параметры для текста
+    price = rat * 50000
+    if rat < 60: hours = 0.5
+    elif rat < 70: hours = 1
+    elif rat < 75: hours = 2
+    elif rat < 85: hours = 5
+    elif rat < 90: hours = 9
+    else: hours = 24
+
+    text = (
+        f"🏋️‍♂️ <b>ПОДТВЕРЖДЕНИЕ ТРЕНИРОВКИ</b>\n\n"
+        f"👤 Игрок: <b>{name}</b>\n"
+        f"📊 Улучшение: {rat} ➡️ {rat+1}\n"
+        f"💰 Стоимость: <code>{price:,}</code> монет\n"
+        f"⏳ Длительность: <b>{hours} ч.</b>\n\n"
+        f"⚠️ <i>Игрок будет временно удален из состава и перемещен в лазарет!</i>"
+    )
+    
+    b = InlineKeyboardBuilder()
+    # Передаем данные. Важно: hours может быть float (0.5), поэтому передаем как строку
+    b.row(types.InlineKeyboardButton(
+        text="✅ Подтвердить и оплатить", 
+        callback_data=f"confirm_tr_{pid}_{hours}_{price}")
+    )
+    b.row(types.InlineKeyboardButton(text="❌ Отмена", callback_data="back_to_field"))
+    
+    await cb.message.edit_text(text, reply_markup=b.as_markup(), parse_mode="HTML")
+
+@dp.callback_query(F.data.startswith("confirm_tr_"))
+async def process_training_payment(cb: types.CallbackQuery):
+    # Разбираем данные из callback_data
+    data = cb.data.split("_")
+    pid = data[2]
+    hours = float(data[3]) # Исправлено: float для корректной обработки 0.5 ч.
+    price = int(data[4])
+    uid = cb.from_user.id
+
+    conn = get_db(); c = conn.cursor()
+    
+    # 1. Проверяем баланс юзера
+    c.execute('SELECT balance FROM users WHERE user_id = ?', (uid,))
+    user_data = c.fetchone()
+    
+    if not user_data or user_data[0] < price:
+        conn.close()
+        return await cb.answer("❌ Недостаточно монет для тренировки!", show_alert=True)
+
+    # 2. Проверяем, существует ли игрок
+    c.execute('SELECT player_name, rating FROM squad WHERE id = ? AND user_id = ?', (pid, uid))
+    player = c.fetchone()
+    
+    if not player:
+        conn.close()
+        return await cb.answer("❌ Игрок не найден!", show_alert=True)
+
+    # 3. Списываем деньги и ставим игрока на тренировку
+    name, start_rat = player
+    # Расчет времени для планировщика и БД
+    finish_dt = datetime.datetime.now() + datetime.timedelta(hours=hours)
+    finish_time = finish_dt.strftime("%Y-%m-%d %H:%M:%S")
+    
+    # Списываем баланс
+    c.execute('UPDATE users SET balance = balance - ? WHERE user_id = ?', (price, uid))
+    
+    # Обновляем игрока
+    c.execute('''UPDATE squad SET 
+                 slot_id = NULL, 
+                 status = "bench", 
+                 training_until = ? 
+                 WHERE id = ?''', (finish_time, pid))
+    
+    conn.commit(); conn.close()
+
+    # Добавляем задачу в планировщик
+    scheduler.add_job(
+        training_done_callback, 
+        'date', 
+        run_date=finish_dt, 
+        args=[cb.bot, uid, pid, start_rat]
+    )
+
+    await cb.message.edit_text(
+        f"✅ Тренировка игрока <b>{name}</b> началась!\n"
+        f"⏳ Он вернется через {hours} ч. ({finish_time})",
+        parse_mode="HTML"
+    )
+    await cb.answer("Оплата прошла успешно!")
+
+@dp.message(F.text.lower() == "!выйти")
+async def quit_club(m: types.Message):
+    uid = m.from_user.id
+    conn = get_db(); c = conn.cursor()
+    
+    # 1. Проверяем наличие клуба
+    c.execute('SELECT club FROM users WHERE user_id = ?', (uid,))
+    res = c.fetchone()
+    
+    if not res or not res[0]:
+        conn.close()
+        return await m.answer("❌ Ты и так вольный агент. Вступать не во что, выходить не откуда.")
+
+    club_name = res[0]
+    
+    # 2. Убираем привязку к клубу в профиле
+    c.execute('UPDATE users SET club = NULL WHERE user_id = ?', (uid,))
+    
+    # 3. Снимаем всех игроков с позиций (отправляем в запас)
+    c.execute('UPDATE squad SET slot_id = NULL, status = "bench" WHERE user_id = ?', (uid,))
+    
+    # 4. УДАЛЯЕМ ИЗ ЛИГИ (очистка расписания)
+    # Удаляем все предстоящие матчи этого юзера, которые еще не сыграны
+    c.execute('DELETE FROM league_schedule WHERE (home_id = ? OR away_id = ?) AND status = "pending"', (uid, uid))
+    
+    # 5. Очищаем статистику лиги для этого юзера (опционально, если хочешь обнулить победы/поражения)
+    c.execute('''UPDATE users SET 
+                 league_wins = 0, league_draws = 0, league_losses = 0, 
+                 league_goals = 0 WHERE user_id = ?''', (uid,))
+
+    conn.commit(); conn.close()
+    
+    await m.answer(
+        f"🏃 <b>ПОЛНЫЙ ВЫХОД</b>\n\n"
+        f"Ты покинул клуб <b>{club_name}</b>.\n"
+        f"⚠️ Все твои несыгранные матчи в лиге аннулированы, игроки отправлены в запас.\n\n"
+        f"Теперь ты — свободный агент.", 
+        parse_mode="HTML"
+    )
+
+@dp.message(F.text == "!хелп")
+async def help_command(m: types.Message):
+    help_text = (
+        "📖 <b>СПИСОК КОМАНД БОТА</b>\n\n"
+        "⚽️ <b>Игровые:</b>\n"
+        "└ <code>!клубы</code> — Посмотреть список всех доступных клубов\n"
+        "└ <code>!выйти</code> — Покинуть текущий клуб\n\n"
+        "🛠 <b>Управление:</b>\n"
+        "└ Используй кнопку 🚀 <b>Рынок</b> для торговли\n"
+        "└ Используй кнопку 📋 <b>Состав</b> для управления командой\n\n"
+        "<i>Инструкция: чтобы выбрать игрока, нажми на пустой слот в меню состава.</i>"
+    )
+    await m.answer(help_text, parse_mode="HTML")
 
 async def play_cup_match_full(t1_id, t2_id, t1_name, t2_name, bot, prev_score=(0, 0), use_extra_time=True):
     conn = get_db(); c = conn.cursor()
@@ -811,54 +1075,50 @@ WIN_REWARD = 5     # Награда за победу (млн €)
 DRAW_REWARD = 1    # Награда за ничью (млн €)
 
 # --- ЛОГИКА ---
-async def edit_squad_message(message: types.Message, user_id: int, chat_id: int):
-    # 1. Восстановление стамины (убедись, что модуль tired импортирован)
-    try:
-        tired.process_stamina_recovery(user_id) 
-    except Exception as e:
-        print(f"Ошибка восстановления стамины: {e}")
+async def edit_squad_message(message: types.Message, user_id: int, chat_id: int, viewer_id: int = None):
+    # Если viewer_id не передан, считаем, что смотрит сам владелец
+    if viewer_id is None:
+        viewer_id = user_id
+    
+    is_owner = (user_id == viewer_id)
+
+    # 1. Восстановление стамины (только для владельца при просмотре)
+    if is_owner:
+        try:
+            tired.process_stamina_recovery(user_id) 
+        except Exception as e:
+            print(f"Ошибка восстановления стамины: {e}")
 
     conn = get_db()
     c = conn.cursor()
     
-    # 2. Получаем основные данные пользователя
     c.execute('SELECT club, formation FROM users WHERE user_id = ?', (user_id,))
     user_data = c.fetchone()
     
     if not user_data or not user_data[0]:
         conn.close()
-        # Если данных нет, уведомляем пользователя
-        text = "❌ Клуб не найден. Используйте /start, чтобы выбрать команду."
+        text = "❌ Клуб не найден. Начните /start"
         if isinstance(message, types.CallbackQuery):
             return await message.answer(text, show_alert=True)
         return await message.answer(text)
 
     club_name, formation_name = user_data
 
-    # 3. Расчет схемы
+    # Расчет схемы
     try:
         f_parts = [int(x) for x in formation_name.split('-')]
-    # Если сумма цифр больше 10, значит схема битая, ставим 4-4-2
-        if sum(f_parts) > 10:
-            f_parts = [4, 3, 3]
-            formation_name = "4-3-3"
-    
-        formation_layout = [1] + f_parts # 1 (ВР) + 4 + 4 + 2 = 11. ТАК И ДОЛЖНО БЫТЬ.
+        formation_layout = [1] + f_parts
     except:
         formation_layout = [1, 4, 3, 3]
         formation_name = "4-3-3"
 
-    # 4. Получаем игроков, которые стоят в слотах (на поле)
     c.execute('''SELECT id, player_name, rating, pos, slot_id, stamina, injury_type 
                  FROM squad 
                  WHERE user_id = ? AND slot_id IS NOT NULL 
                  ORDER BY slot_id ASC''', (user_id,))
     
-    # Создаем словарь слотов для быстрого доступа: {номер_слота: данные_игрока}
     slots_dict = {row[4]: row for row in c.fetchall()}
     conn.close()
-
-    # 5. Формируем визуальную часть (Текст)
 
     current_rating = get_squad_rating(user_id)
 
@@ -873,52 +1133,48 @@ async def edit_squad_message(message: types.Message, user_id: int, chat_id: int)
     current_slot = 1
     pos_names = ["GK", "DEF", "MID", "FWD"]
     
-    # Итерируемся по линиям схемы (ВР, ЗАЩ, ПЗ, НАП)
     for i, count in enumerate(formation_layout):
         line_pos = pos_names[i]
         for _ in range(count):
             if current_slot in slots_dict:
                 pid, name, rat, pos, _, stam, inj = slots_dict[current_slot]
-                
-                # Иконка: травма приоритетнее всего
                 icon = "🚑" if inj else "✅"
-                builder.button(text=icon, callback_data=f"manage_{pid}")
+                
+                # Если не владелец — кнопка ведет на уведомление
+                cb_data = f"pl_{pid}" if is_owner else "view_only_info"
+                builder.button(text=icon, callback_data=cb_data)
                 
                 inj_info = f" [🤕 {inj}]" if inj else ""
                 text += f"<code>{current_slot}.</code> {name} ({rat}) 🔋{stam}%{inj_info}\n"
             else:
-                # Пустой слот
-                builder.button(text="➕", callback_data=f"selectpos_{line_pos}_{current_slot}")
+                # Если не владелец — пустая кнопка вместо плюсика
+                cb_data = f"selectpos_{line_pos}_{current_slot}" if is_owner else "view_only_info"
+                btn_text = "➕" if is_owner else "▫️"
+                builder.button(text=btn_text, callback_data=cb_data)
                 text += f"<code>{current_slot}.</code> ——— <i>Пусто ({line_pos})</i> ———\n"
             
             current_slot += 1
             
-    # 6. Кнопки управления (в отдельные ряды)
-    builder.row(
-        types.InlineKeyboardButton(text="⚡️ Автосбор", callback_data="autofill"),
-        types.InlineKeyboardButton(text="🗑 Очистить", callback_data="clear_squad"),
-        types.InlineKeyboardButton(text="📐 Схемы", callback_data="open_formations")
-    )
-    builder.row(types.InlineKeyboardButton(text="⬅️ Назад в меню", callback_data="back_to_main"))
-
-    # Применяем сетку: сначала кнопки поля по линиям, потом управление по 2 в ряд
-    builder.adjust(*formation_layout, 2, 1)
-
-    # 7. Отправка/Редактирование
-    try:
-        # Если пришел CallbackQuery, работаем с его сообщением
-        target = message.message if isinstance(message, types.CallbackQuery) else message
-        
-        await target.edit_text(
-            text, 
-            reply_markup=builder.as_markup(), 
-            parse_mode="HTML"
+    # Кнопки управления добавляем ТОЛЬКО владельцу
+    if is_owner:
+        builder.row(
+            types.InlineKeyboardButton(text="⚡️ Автосбор", callback_data="autofill"),
+            types.InlineKeyboardButton(text="🗑 Очистить", callback_data="clear_squad"),
+            types.InlineKeyboardButton(text="📐 Схемы", callback_data="open_formations")
         )
+        builder.row(types.InlineKeyboardButton(text="⬅️ Назад в меню", callback_data="back_to_main"))
+    else:
+        # Для чужого человека кнопка возврата в профиль того игрока
+        builder.row(types.InlineKeyboardButton(text="⬅️ Назад в профиль", callback_data=f"view_profile_{user_id}"))
+
+    builder.adjust(*formation_layout, 2 if is_owner else 1, 1)
+
+    try:
+        target = message.message if isinstance(message, types.CallbackQuery) else message
+        await target.edit_text(text, reply_markup=builder.as_markup(), parse_mode="HTML")
     except Exception as e:
-        # Если текст не изменился, aiogram выкинет ошибку - просто игнорируем её
         if "message is not modified" not in str(e):
             print(f"Ошибка отрисовки состава: {e}")
-    
 
 # --- ОБРАБОТЧИКИ ---
 
@@ -968,6 +1224,8 @@ async def set_player_to_slot(cb: types.CallbackQuery):
     # Разбираем: pid - id нового игрока, slot_id - номер места на поле (1-11)
     _, pid, slot_id = cb.data.split("_")
     uid = cb.from_user.id
+
+    if not await check_ownership(cb, pid): return
     
     conn = get_db()
     c = conn.cursor()
@@ -992,16 +1250,22 @@ async def set_player_to_slot(cb: types.CallbackQuery):
 
 @dp.callback_query(F.data.startswith("selectpos_"))
 async def list_players_for_slot(cb: types.CallbackQuery):
-    # Разбираем данные: позиция и номер слота
     _, pos_needed, slot_id = cb.data.split("_")
     uid = cb.from_user.id
-    
+
     conn = get_db(); c = conn.cursor()
-    # Выбираем только тех, кто в запасе, на нужной позиции и ЗДОРОВ
-    c.execute('''SELECT id, player_name, rating, stamina 
+    
+    # ИСПРАВЛЕНИЕ: Добавляем маску поиска % (например, %MID%)
+    search_pattern = f"%{pos_needed}%"
+    
+    # ИСПРАВЛЕНИЕ: Меняем "pos = ?" на "pos LIKE ?"
+    c.execute('''SELECT id, player_name, rating, stamina, pos 
                  FROM squad 
-                 WHERE user_id = ? AND pos = ? AND status = "bench" AND injury_remaining = 0
-                 ORDER BY rating DESC''', (uid, pos_needed))
+                 WHERE user_id = ? 
+                 AND pos LIKE ? 
+                 AND status = "bench" 
+                 AND injury_remaining = 0
+                 ORDER BY rating DESC''', (uid, search_pattern))
     
     players = c.fetchall(); conn.close()
     
@@ -1009,21 +1273,15 @@ async def list_players_for_slot(cb: types.CallbackQuery):
         return await cb.answer(f"❌ У вас нет свободных игроков на позицию {pos_needed}", show_alert=True)
 
     b = InlineKeyboardBuilder()
-    for pid, name, rat, stam in players:
-        # При нажатии вызываем функцию установки в слот
-        b.button(text=f"{name} ({rat}) 🔋{stam}%", callback_data=f"setslot_{pid}_{slot_id}")
+    for pid, name, rat, stam, p_pos in players:
+        # Добавил отображение позиции [p_pos], чтобы ты видел, что универсалы подтянулись
+        b.button(text=f"[{p_pos}] {name} ({rat}) 🔋{stam}%", callback_data=f"setslot_{pid}_{slot_id}")
     
     b.adjust(1)
-    b.row(types.InlineKeyboardButton(text="⬅️ Назад к составу", callback_data="manage_team"))
+    b.row(types.InlineKeyboardButton(text="⬅️ Назад к составу", callback_data=""))
     
     await cb.message.edit_text(f"📥 <b>Выберите {pos_needed} для слота №{slot_id}:</b>", 
                                reply_markup=b.as_markup(), parse_mode="HTML")
-
-async def get_start_keyboard():
-    builder = InlineKeyboardBuilder()
-    builder.button(text="🚀 Начать игру", callback_data="activate_session")
-    return builder.as_markup()
-
 
 @dp.callback_query(F.data.startswith("club_"), GameStates.choosing_club)
 async def choose_club(cb: types.CallbackQuery, state: FSMContext):
@@ -1101,77 +1359,86 @@ async def back(cb: types.CallbackQuery):
     # Добавляем cb.message.chat.id
     await edit_squad_message(cb.message, cb.from_user.id, cb.message.chat.id)
 
-@dp.callback_query(F.data.startswith("manage_"))
+@dp.callback_query(F.data.startswith("pl_"))
 async def manage_player(cb: types.CallbackQuery, state: FSMContext):
-    pid_str = cb.data.split("_")[1]
-    uid = cb.from_user.id
+    data_parts = cb.data.split("_")
+    if len(data_parts) < 2: return await cb.answer("❌ Ошибка ID")
+    
+    pid_str = data_parts[1]
+    user_id = cb.from_user.id
     
     conn = get_db(); c = conn.cursor()
-    # ОБЯЗАТЕЛЬНО добавляем original_owner_id в запрос
-    c.execute('SELECT player_name, rating, pos, status, original_owner_id FROM squad WHERE id = ?', (pid_str,))
+    c.execute('''SELECT player_name, rating, pos, status, original_owner_id, 
+                        training_until, injury_remaining, stamina, user_id
+                 FROM squad WHERE id = ?''', (int(pid_str),))
     row = c.fetchone()
     conn.close()
+
+    if not row: return await cb.answer("Игрок не найден", show_alert=True)
     
-    if row is None:
-        # Твоя стандартная проверка на случай, если игрок пропал
-        return await cb.answer("Игрок не найден")
+    name, rat, pos, status, orig_owner, t_until, inj, stam, p_owner_id = row
     
-    # Распаковываем данные (теперь их 5)
-    name, rat, pos, status, owner_id = row
+    # ПРОВЕРКИ
+    is_viewer_owner = (int(p_owner_id) == user_id)
+    # Проверка аренды (если оригинальный владелец существует и это не текущий)
+    is_loaned_here = (orig_owner is not None and orig_owner != 0 and int(orig_owner) != int(p_owner_id))
+    
     await state.update_data(curr_pid=pid_str)
-    
     b = InlineKeyboardBuilder()
+    
+    # --- ЛОГИКА КНОПОК: Только для владельца ---
+    if is_viewer_owner:
+        # Если не на тренировке, не травмирован и не на рынке — можно тренировать
+        if not is_loaned_here and not t_until and inj == 0 and status != "on_sale":
+            b.button(text="🏋️‍♂️ Отправить на тренировку", callback_data=f"train_pl_{pid_str}")
 
-    # --- ПРОВЕРКА НА АРЕНДУ ---
-    # Если owner_id не NULL и не равен 0 (системный), значит игрок арендован
-    is_loaned = owner_id is not None and owner_id != 0
-
-    if is_loaned:
-        # МЕНЮ ДЛЯ АРЕНДОВАННОГО ИГРОКА (только состав)
         if status != "bench":
             b.button(text="📥 В запас", callback_data="quick_bench")
+
+        if is_loaned_here:
+            status_info = "🎭 <b>Статус:</b> В аренде у тебя"
         else:
-            # Если он в запасе, можно добавить кнопку "В состав" (если у тебя есть такой хендлер)
-            # b.button(text="🏃 В состав", callback_data=f"to_squad_{pid_str}")
-            pass
-        
-        status_info = "🎭 <b>Статус:</b> Арендован"
+            if status == "on_sale":
+                b.button(text="❌ Снять с рынка", callback_data=f"remove_m_{pid_str}")
+                status_text = "На трансфере"
+            else:
+                b.button(text="🚀 Выставить на рынок", callback_data="pre_sell")
+                b.button(text="🤝 Сдать в аренду", callback_data=f"pre_loan_{pid_str}")
+                status_text = "В запасе" if status == "bench" else "В составе"
+            status_info = f"📊 <b>Статус:</b> {status_text}"
     else:
-        # СТАНДАРТНОЕ МЕНЮ ДЛЯ СВОЕГО ИГРОКА
-        if status != "bench":
-            b.button(text="📥 В запас", callback_data="quick_bench")
-        
-        # Логика кнопок рынка (только для своих!)
-        if status == "on_sale":
-            b.button(text="❌ Снять с рынка", callback_data=f"remove_m_{pid_str}")
-        else:
-            b.button(text="🚀 Выставить на рынок", callback_data="pre_sell")
-            b.button(text="🤝 Сдать в аренду", callback_data=f"pre_loan_{pid_str}")
-        
-        status_text = "На рынке" if status == "on_sale" else ("В запасе" if status == "bench" else "В составе")
-        status_info = f"📊 <b>Статус:</b> {status_text}"
+        # Если смотрит чужой
+        status_info = "📊 <b>Статус:</b> В чужом клубе"
 
-    # Общие кнопки
+    # Админка (всегда доступна тебе)
+    if user_id in ADMINS:
+        b.button(text="🛠 Админ-меню", callback_data=f"admin_manage_{pid_str}")
+
     b.button(text="⬅️ Назад", callback_data="back_to_field")
     b.adjust(1)
     
-    # Формируем текст
-    text = (
-        f"👤 <b>Игрок:</b> {name} (⭐{rat})\n"
-        f"📍 <b>Позиция:</b> {pos}\n"
-        f"{status_info}"
-    )
+    text = (f"👤 <b>Игрок:</b> {name} (⭐{rat})\n"
+            f"📍 <b>Позиция:</b> {pos}\n"
+            f"🔋 <b>Энергия:</b> {stam}%\n"
+            f"{status_info}")
     
-    if is_loaned:
-        text += "\n\n⚠️ <i>Вы не можете продать или обменять этого игрока, так как он находится у вас в аренде.</i>"
+    # Блок времени для тренировок
+    if t_until:
+        try:
+            now = datetime.datetime.now()
+            end_t = datetime.datetime.strptime(t_until, "%Y-%m-%d %H:%M:%S")
+            if end_t > now:
+                rem = end_t - now
+                text += f"\n\n🏋️‍♂️ <b>На тренировке:</b> {rem.seconds // 3600}ч. {(rem.seconds//60)%60}м."
+            else:
+                text += f"\n\n✅ <b>Тренировка завершена!</b>"
+        except: pass
 
-    await cb.message.edit_text(
-        text, 
-        reply_markup=b.as_markup(),
-        parse_mode="HTML"
-    )
-    await cb.answer()
-
+    if inj > 0:
+        text += f"\n\n🚑 <b>Травмирован:</b> еще {inj} тур(а)"
+    
+    await cb.message.edit_text(text, reply_markup=b.as_markup(), parse_mode="HTML")
+        
 @dp.message(F.text == "В")
 async def cmd_schemes(message: types.Message):
     # Вызываем функцию, которую мы уже писали выше
@@ -1190,11 +1457,10 @@ async def quick_bench(cb: types.CallbackQuery, state: FSMContext):
 @dp.message(F.text == "📜 Весь состав")
 async def show_full_squad(m: types.Message):
     uid = m.from_user.id
-    conn = get_db(); c = conn.cursor()
     
-    # Мы берем только тех, чей user_id совпадает с ID юзера. 
-    # И исключаем системных или удаленных.
-    c.execute('''SELECT player_name, rating, pos, status, stamina, injury_type 
+    conn = get_db(); c = conn.cursor()
+    # SQL-запрос сам фильтрует чужой контент через "WHERE user_id = ?"
+    c.execute('''SELECT player_name, rating, pos, status, stamina, injury_remaining 
                  FROM squad 
                  WHERE user_id = ? 
                  ORDER BY rating DESC''', (uid,))
@@ -1205,17 +1471,20 @@ async def show_full_squad(m: types.Message):
         return await m.answer("📭 Ваш состав пуст.")
 
     text = "📋 <b>Ваш полный состав:</b>\n\n"
-    for name, rat, pos, status, stam, inj in players:
-        # Иконки для статуса
-        if status == "loaned": icon = "🎭" # Арендован у кого-то
-        elif status == "active": icon = "🔋" # В основе
-        else: icon = "🪑" # В запасе
-        
-        # Пометка травмы
-        inj_text = f" [🚑 {inj}]" if inj else ""
-        
-        text += f"{icon} {name} ({pos}) — {rat} | {stam}/50{inj_text}\n"
     
+    for name, rat, pos, status, stam, inj in players:
+        # Формируем статусную иконку
+        if inj > 0:
+            st = "🚑"
+        elif status == "on_sale":
+            st = "💰"
+        elif status == "bench":
+            st = "📥"
+        else:
+            st = "🟢"
+            
+        text += f"{st} {name} (⭐{rat}) | {pos} | 🔋{stam}%\n"
+
     await m.answer(text, parse_mode="HTML")
 
 @dp.callback_query(F.data == "autofill")
@@ -1231,15 +1500,10 @@ async def autofill(cb: types.CallbackQuery):
         if not res: 
             return await cb.answer("❌ Сначала выберите схему в настройках!")
         
-        formation_name = res[0] # Например, "4-3-3" или "5-3-2"
+        formation_name = res[0]
         f_parts = [int(x) for x in formation_name.split('-')]
         
-        # ДИНАМИЧЕСКАЯ ЛОГИКА:
-        # f_parts[0] - всегда DEF
-        # f_parts[1] - всегда MID
-        # f_parts[2] - всегда FWD
-        # Вратарь (GK) всегда 1
-        
+        # Схема: Позиция и сколько человек нужно
         formation_logic = [
             ("GK", 1), 
             ("DEF", f_parts[0]), 
@@ -1247,21 +1511,35 @@ async def autofill(cb: types.CallbackQuery):
             ("FWD", f_parts[2])
         ]
 
-        # 2. Сбрасываем старый состав
-        # Убираем только тех, кто в "active", чтобы не трогать выставленных на трансфер
-        c.execute('''UPDATE squad SET slot_id = NULL, status = "bench" 
-                     WHERE user_id = ? AND status = "active"''', (user_id,))
+        # 2. Сбрасываем текущий состав в запас
+        c.execute('''UPDATE squad 
+                     SET slot_id = NULL, status = "bench" 
+                     WHERE user_id = ? AND status != "on_sale" AND training_until IS NULL''', (user_id,))
 
         players_added = 0
         current_slot = 1
+        used_ids = [] # Список ID, которые мы уже поставили на поле
 
         # 3. Заполняем по позициям
         for pos, limit in formation_logic:
-            # Берем самых сильных, здоровых и не забаненных
-            c.execute('''SELECT id FROM squad 
-                         WHERE user_id = ? AND pos = ? AND status = "bench" 
-                         AND injury_remaining = 0 AND is_banned = 0
-                         ORDER BY rating DESC LIMIT ?''', (user_id, pos, limit))
+            # ИСПРАВЛЕНО: Используем LIKE %pos%, чтобы найти игрока с двойной позицией
+            # Также добавили NOT IN (used_ids), чтобы один и тот же универсал не встал на две позиции сразу
+            search_query = f"%{pos}%"
+            
+            # Формируем строку с уже использованными ID для SQL
+            placeholders = ','.join(['?'] * len(used_ids)) if used_ids else '0'
+            
+            query = f'''SELECT id, player_name, rating FROM squad 
+                        WHERE user_id = ? 
+                        AND pos LIKE ? 
+                        AND status = "bench" 
+                        AND injury_remaining = 0 
+                        AND (training_until IS NULL OR training_until = '')
+                        AND id NOT IN ({placeholders})
+                        ORDER BY rating DESC LIMIT ?'''
+            
+            params = [user_id, search_query] + used_ids + [limit]
+            c.execute(query, params)
             
             rows = c.fetchall()
             for row in rows:
@@ -1269,58 +1547,70 @@ async def autofill(cb: types.CallbackQuery):
                 
                 c.execute('UPDATE squad SET slot_id = ?, status = "active" WHERE id = ?', 
                          (current_slot, row[0]))
+                
+                used_ids.append(row[0]) # Помечаем игрока как занятого
                 current_slot += 1
                 players_added += 1
 
         conn.commit()
 
-    # 4. Проверка на "недобор"
+    # 4. Итог
     if players_added < 11:
-        msg = f"⚡️ Автосостав: {players_added}/11. Не хватило игроков на нужные позиции!"
+        msg = f"⚠ Состав: {players_added}/11. Не хватило здоровых игроков!"
     else:
-        msg = f"✅ Состав собран по схеме {formation_name}!"
+        msg = f"🔥 Топ-состав собран! ({formation_name})"
 
     await cb.answer(msg, show_alert=True)
     
-    # Обновляем сообщение (вызываем твою функцию отрисовки состава)
+    # Обновляем сообщение (используй свою функцию перерисовки)
     try:
         await edit_squad_message(cb.message, user_id, cb.message.chat.id)
     except:
         pass
-
+        
 @dp.callback_query(F.data == "clear_squad")
 async def clear_squad_handler(cb: types.CallbackQuery):
-    user_id = cb.from_user.id
+    user_id = cb.from_user.id # ID того, кто нажал
     
-    with get_db() as conn:
-        c = conn.cursor()
-        
-        # Снимаем всех с позиций (ставим slot_id = NULL)
-        # Статус меняем на "bench" (запас), кроме тех, кто на продаже
-        c.execute('''
-            UPDATE squad 
-            SET slot_id = NULL, status = "bench" 
-            WHERE user_id = ? AND status != "on_sale"
-        ''', (user_id,))
-        
-        conn.commit()
+    # Чтобы нельзя было очистить чужой клуб:
+    # Мы всегда очищаем только тот клуб, который ПРИНАДЛЕЖИТ нажавшему юзеру.
+    conn = get_db(); c = conn.cursor()
+    
+    # Проверяем, есть ли у юзера вообще игроки в составе
+    c.execute('SELECT COUNT(*) FROM squad WHERE user_id = ? AND slot_id IS NOT NULL', (user_id,))
+    count = c.fetchone()[0]
+    
+    if count == 0:
+        conn.close()
+        return await cb.answer("📭 Ваш состав и так пуст!", show_alert=True)
 
-    await cb.answer("🧹 Состав полностью очищен!")
-    # Обновляем сообщение, чтобы юзер увидел пустой список/запас
-    await edit_squad_message(cb.message, cb.from_user.id, cb.message.chat.id)
+    # Очищаем СВОЙ состав (по user_id нажавшего)
+    c.execute('''UPDATE squad 
+                 SET slot_id = NULL, status = "bench" 
+                 WHERE user_id = ? AND (status != "on_sale" OR status IS NULL)''', (user_id,))
+    
+    conn.commit(); conn.close()
+
+    await cb.answer("🧹 Ваш состав полностью очищен!")
+    # Перерисовываем экран
+    await edit_squad_message(cb.message, user_id, cb.message.chat.id)
     
 @dp.callback_query(F.data == "pre_sell")
 async def pre_sell(cb: types.CallbackQuery, state: FSMContext):
     if not is_transfer_open():
         return await cb.answer("🛑 Трансферное окно закрыто! Выставлять игроков нельзя.", show_alert=True)
     
-    await cb.message.edit_text("Введите цену продажи (в млн €):")
+    await cb.message.edit_text("Введите цену продажи (в млн €):\n\nДля отмены введите <b>Отмена</b>", parse_mode="HTML")
     await state.set_state(GameStates.setting_price)
 
 @dp.message(GameStates.setting_price)
 async def market_sell(m: types.Message, state: FSMContext):
+    if m.text and m.text.lower() == "отмена":
+        await state.clear()
+        return await m.answer("❌ Выставление игрока на рынок отменено.", reply_markup=get_main_kb(m.from_user.id))
+
     if not m.text.isdigit(): 
-        return await m.answer("⚠️ Введите число (млн €)!")
+        return await m.answer("⚠️ Введите число (млн €) или напишите 'Отмена'!")
     
     uid = m.from_user.id
     price = int(m.text)
@@ -2289,44 +2579,66 @@ async def buy_player(cb: types.CallbackQuery):
         conn.close()
 
 @dp.message(F.text == "📋 Весь состав")
-async def show_all_interactive(m: types.Message):
+async def show_all_interactive(m: Union[types.Message, types.CallbackQuery], target_user_id: int = None):
+    viewer_id = m.from_user.id
+    # Если зашли через профиль другого игрока, target_user_id будет не None
+    owner_id = target_user_id if target_user_id else viewer_id
+    is_owner = (viewer_id == owner_id)
+
     conn = get_db()
     c = conn.cursor()
-    # Берем всех игроков пользователя
-    c.execute('''SELECT id, player_name, rating, pos, status 
-                 FROM squad WHERE user_id = ? 
-                 ORDER BY rating DESC''', (m.from_user.id,))
+    c.execute('''SELECT id, player_name, rating, pos, status, original_owner_id 
+                 FROM squad 
+                 WHERE user_id = ? 
+                 ORDER BY rating DESC''', (owner_id,))
     ps = c.fetchall()
     conn.close()
     
     if not ps: 
-        return await m.answer("У вас еще нет игроков.")
+        return await m.answer("📭 В этом клубе пока нет игроков.")
 
-    text = "📂 <b>Управление картотекой</b>\n"
-    text += "<i>Нажмите на кнопку с игроком, чтобы управлять им</i>\n"
-    text += "⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯\n"
+    title = "📂 <b>Ваша картотека</b>" if is_owner else f"📂 <b>Картотека игрока</b>"
+    text = (
+        f"{title}\n"
+        f"<i>{'Выберите игрока для управления.' if is_owner else 'Просмотр состава.'}</i>\n"
+        f"⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯"
+    )
     
     builder = InlineKeyboardBuilder()
     em = {"GK": "🧤", "DEF": "🛡", "MID": "🧠", "FWD": "🎯"}
     
-    for pid, name, rat, pos, stat in ps:
-        # Иконка статуса для кнопки
-        if stat == "active": s_icon = "🏃"
-        elif stat == "on_sale": s_icon = "💰"
+    for row in ps:
+        pid, name, rat, pos, stat, orig_owner = row
+        
+        if stat == "on_sale": s_icon = "💰"
+        elif orig_owner and orig_owner != 0: s_icon = "🎭"
+        elif stat in ["active", "main"]: s_icon = "🏃"
         else: s_icon = "🪑"
         
-        # Создаем кнопку для каждого игрока
+        # Если не владелец — колбэк ведет на заглушку
+        cb_data = f"pl_{pid}" if is_owner else "view_only_info"
+        
         builder.button(
             text=f"{em.get(pos, '⚽️')} {name} ({rat}) {s_icon}", 
-            callback_data=f"manage_{pid}" # Используем уже готовый обработчик manage_
+            callback_data=cb_data 
         )
     
-    builder.adjust(1) # Кнопки в один столбец для удобства
+    builder.adjust(1) 
     
-    # Добавляем легенду в текст
-    footer = "\n⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯\n🏃 — в старте | 🪑 — в запасе | 💰 — на рынке"
+    if not is_owner:
+        builder.row(types.InlineKeyboardButton(text="⬅️ Назад в профиль", callback_data=f"view_profile_{owner_id}"))
+
+    footer = "\n⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯\n🏃 — старт | 🪑 — запас | 💰 — рынок | 🎭 — аренда"
     
-    await m.answer(text + footer, reply_markup=builder.as_markup(), parse_mode="HTML")
+    if isinstance(m, types.Message):
+        await m.answer(text + footer, reply_markup=builder.as_markup(), parse_mode="HTML")
+    else:
+        await m.message.edit_text(text + footer, reply_markup=builder.as_markup(), parse_mode="HTML")
+
+# Заглушка для чужих нажатий
+@dp.callback_query(F.data == "view_only_info")
+async def view_only_info(cb: types.CallbackQuery):
+    await cb.answer("👀 Это чужой состав, вы не можете им управлять.", show_alert=False)
 
 @dp.message(F.text == "💰 Баланс")
 async def bal(m: types.Message):
@@ -2592,6 +2904,7 @@ async def pre_match_check(m: types.Message):
     # Сохраняем в matches_data
     matches_data[uid] = {
         "my_players": my_players,
+        "my_name": my_club_name,
         "bench": bench,
         "used_players": [p["name"] for p in my_players],
         "substituted_out": [],
@@ -2618,7 +2931,7 @@ async def start_match_callback(cb: types.CallbackQuery):
     row = c.fetchone()
     
     now = datetime.datetime.now()
-    cooldown_minutes = 60 # Установи здесь сколько минут ждать (например, 30)
+    cooldown_minutes = 30 # Установи здесь сколько минут ждать (например, 30)
 
     if row and row[0]:
         try:
@@ -2843,11 +3156,15 @@ async def run_match_simulation(msg, uid):
     elif minute_step >= 90:
         await finish_match(msg, uid)
 
-@dp.callback_query(F.data == "change_form_match")
-async def change_form_match(cb: types.CallbackQuery):
-    await cb.message.edit_text("Выберите новую схему на 2-й тайм:", 
-                              reply_markup=get_formation_inline())
+# 1. Сначала хендлер, чтобы кнопка вообще ожила
+@dp.callback_query(F.data == "manage_team")
+async def manage_team_callback(cb: types.CallbackQuery):
+    uid = cb.from_user.id
+    if uid not in matches_data:
+        return await cb.answer("❌ Данные матча устарели.", show_alert=True)
+    await manage_team(cb, uid)
 
+# 2. Сама исправленная функция
 async def manage_team(event, uid=None):
     """Центральное меню тактики и замен."""
     if uid is None:
@@ -2857,30 +3174,38 @@ async def manage_team(event, uid=None):
         return 
 
     data = matches_data[uid]
-    data["is_paused"] = True # Всегда ставим на паузу, пока юзер в меню
+    data["is_paused"] = True 
+
+    # ДОСТАЕМ ИМЯ КЛУБА ИЗ БД (чтобы не было "Клуб")
+    conn = get_db(); c = conn.cursor()
+    c.execute('SELECT club FROM users WHERE user_id = ?', (uid,))
+    u_row = c.fetchone()
+    club_name = u_row[0] if u_row else "Мой Клуб"
+    conn.close()
     
     b = InlineKeyboardBuilder()
-    # Кнопки тактики в один ряд
     b.row(
         types.InlineKeyboardButton(text="⚔️ Атака", callback_data="m_tactic_Атакующая"),
         types.InlineKeyboardButton(text="⚖️ Баланс", callback_data="m_tactic_Сбалансированная"),
         types.InlineKeyboardButton(text="🛡 Защита", callback_data="m_tactic_Защитная")
     )
-    # Замены и Продолжить
     b.row(types.InlineKeyboardButton(text="🔄 Сделать замены", callback_data="sub_list"))
     b.row(types.InlineKeyboardButton(text="▶️ Продолжить матч", callback_data="continue_match"))
 
     text = (
-        f"⚙️ <b>Управление: {data.get('my_name', 'Клуб')}</b>\n"
+        f"⚙️ <b>Управление: {club_name}</b>\n"
         f"⚽️ Счет: <b>{data['score_me']}:{data['score_opp']}</b> | ⏱ {data['minute']}'\n"
         f"Установка: <b>{data.get('tactic', 'Сбалансированная')}</b>\n\n"
         f"<i>Настройте состав и нажмите 'Продолжить'</i>"
     )
 
-    if isinstance(event, types.CallbackQuery):
-        await event.message.edit_text(text, reply_markup=b.as_markup(), parse_mode="HTML")
-    else:
-        await event.answer(text, reply_markup=b.as_markup(), parse_mode="HTML")
+    try:
+        if isinstance(event, types.CallbackQuery):
+            await event.message.edit_text(text, reply_markup=b.as_markup(), parse_mode="HTML")
+        else:
+            await event.answer(text, reply_markup=b.as_markup(), parse_mode="HTML")
+    except Exception as e:
+        print(f"Ошибка в manage_team: {e}")
 
 # Обработчик смены тактики
 @dp.callback_query(F.data.startswith("m_tactic_"))
@@ -2996,70 +3321,89 @@ async def show_sub_menu(cb: types.CallbackQuery):
 
 @dp.callback_query(F.data.startswith("selectpos_"))
 async def list_players(cb: types.CallbackQuery):
-    _, pos_needed, slot_idx = cb.data.split("_")
+    # Разбираем колбэк
+    parts = cb.data.split("_")
+    pos_needed = parts[1] # Это будет GK, DEF, MID или FWD
+    slot_idx = parts[2]
     uid = cb.from_user.id
-    data = matches_data[uid]
-    
-    current_names = [p['name'] for p in data["my_players"]]
-    gone_names = data.get("substituted_out", [])
     
     conn = get_db(); c = conn.cursor()
-    # Достаем id, имя, рейтинг и СТАМИНУ запасных
-    c.execute('SELECT id, player_name, rating, stamina FROM squad WHERE user_id = ? AND pos = ?', (uid, pos_needed))
-    all_subs = c.fetchall(); conn.close()
     
+    # Делаем поиск максимально гибким:
+    # 1. Приводим всё к ВЕРХНЕМУ регистру (UPPER)
+    # 2. Ищем вхождение строки
+    search_pattern = f"%{pos_needed.upper()}%"
+    
+    c.execute('''SELECT id, player_name, rating, pos, stamina 
+                 FROM squad 
+                 WHERE user_id = ? 
+                 AND UPPER(pos) LIKE ? 
+                 AND slot_id IS NULL 
+                 AND injury_remaining = 0 
+                 AND is_banned = 0
+                 AND (training_until IS NULL OR training_until = '')
+                 ORDER BY rating DESC''', (uid, search_pattern))
+    
+    all_subs = c.fetchall()
+    conn.close()
+    
+    if not all_subs:
+        # Если пусто, давай выведем отладочное сообщение в алерт, чтобы понять, что видит бот
+        return await cb.answer(f"❌ Нет свободных игроков для {pos_needed}.\nПроверьте, не стоят ли они уже в составе.", show_alert=True)
+
     b = InlineKeyboardBuilder()
-    count = 0
-    for pid, name, rat, stam in all_subs:
-        if name not in current_names and name not in gone_names:
-            b.button(text=f"{name} ({rat}) 🔋{stam}", callback_data=f"set_{pid}_{slot_idx}")
-            count += 1
-    
-    if count == 0:
-        return await cb.answer(f"❌ Нет свежих игроков на позицию {pos_needed}", show_alert=True)
+    for pid, name, rat, p_pos, stam in all_subs:
+        # Показываем реальную позицию из базы, например [FWD/MID/DEF]
+        b.button(text=f"[{p_pos}] {name} ({rat}) 🔋{stam}%", callback_data=f"setslot_{pid}_{slot_idx}")
     
     b.adjust(1)
-    b.row(types.InlineKeyboardButton(text="⬅️ К составу", callback_data="manage_team"))
+    b.row(types.InlineKeyboardButton(text="⬅️ К составу", callback_data="back_to_squad"))
     
-    await cb.message.edit_text(f"📥 <b>Замена {pos_needed}</b>\nКто готов выйти?", 
-                               reply_markup=b.as_markup(), parse_mode="HTML")
+    await cb.message.edit_text(
+        f"📥 <b>Выбор для позиции {pos_needed}:</b>\nУниверсалы тоже в списке!", 
+        reply_markup=b.as_markup(), 
+        parse_mode="HTML"
+    )
 
 @dp.callback_query(F.data.startswith("msub_"))
 async def list_match_subs(cb: types.CallbackQuery):
-    # Разбираем колбэк: msub_ПОЗИЦИЯ_ИНДЕКС
     parts = cb.data.split("_")
-    pos_needed = parts[1] # Это будет 'MID', 'FWD' и т.д.
+    pos_needed = parts[1] # Например, 'MID'
     slot_idx = parts[2]
     
     uid = cb.from_user.id
-    if uid not in matches_data: return
-    data = matches_data[uid]
+    if uid not in matches_data: 
+        return await cb.answer("❌ Ошибка: Данные матча не найдены.")
     
+    data = matches_data[uid]
     current_names = [p['name'] for p in data["my_players"]]
     gone_names = data.get("substituted_out", []) 
     
     conn = get_db(); c = conn.cursor()
     
-    # ВНИМАНИЕ: Возвращаем "AND pos = ?", чтобы фильтровать по позиции!
-    # И убираем тех, кто уже на поле (slot_id IS NULL)
+    search_query = f"%{pos_needed}%"
+    
     c.execute('''SELECT id, player_name, rating, stamina, pos 
                  FROM squad 
-                 WHERE user_id = ? AND pos = ? AND slot_id IS NULL 
-                 AND injury_remaining = 0 AND is_banned = 0''', (uid, pos_needed))
+                 WHERE user_id = ? 
+                 AND pos LIKE ? 
+                 AND injury_remaining = 0 
+                 AND is_banned = 0''', (uid, search_query))
     
-    all_subs = c.fetchall(); conn.close()
+    all_subs = c.fetchall()
+    conn.close()
     
     b = InlineKeyboardBuilder()
     count = 0
+    
     for pid, name, rat, stam, p_pos in all_subs:
-        # Проверяем, что игрока нет на поле прямо сейчас и он не уходил с него
         if name not in current_names and name not in gone_names:
             b.button(text=f"[{p_pos}] {name} ({rat}) 🔋{stam}", 
                      callback_data=f"set_{pid}_{slot_idx}")
             count += 1
     
     if count == 0:
-        return await cb.answer(f"❌ В запасе нет свободных {pos_needed}!", show_alert=True)
+        return await cb.answer(f"❌ Нет свободных игроков на позицию {pos_needed}!", show_alert=True)
     
     b.adjust(1)
     b.row(types.InlineKeyboardButton(text="⬅️ Назад к списку", callback_data="sub_list"))
@@ -3070,44 +3414,39 @@ async def list_match_subs(cb: types.CallbackQuery):
         parse_mode="HTML"
     )
 
-@dp.message(F.text == "🏥 Лазарет и Дисквалификации")
+@dp.message(F.text == "📦 Вне состава")
 async def show_hospital_msg(message: types.Message):
     user_id = message.from_user.id
     conn = get_db(); c = conn.cursor()
     
-    try:
-        # Тянем сразу всех проблемных игроков
-        c.execute('''SELECT player_name, pos, injury_remaining, is_banned 
-                     FROM squad 
-                     WHERE user_id = ? AND (injury_remaining > 0 OR is_banned > 0)''', (user_id,))
-        players = c.fetchall()
-        conn.close() # Закрываем базу сразу после получения данных
-        
-        res = "🏥 <b>МЕДИЦИНСКИЙ ЦЕНТР</b>\n"
-        res += "————————————————————\n\n"
-        
-        injured_list = []
-        banned_list = []
-        
-        for p in players:
-            name, pos, inj, ban = p[0], p[1], p[2], p[3] # Безопасная распаковка
-            if inj > 0:
-                injured_list.append(f"• {name} ({pos}) — {inj} тур(а)")
-            if ban > 0:
-                banned_list.append(f"• {name} ({pos}) — Пропускает тур")
+    c.execute('''SELECT player_name, pos, injury_remaining, is_banned, training_until 
+                 FROM squad 
+                 WHERE user_id = ? AND (injury_remaining > 0 OR is_banned > 0 OR training_until IS NOT NULL)''', (user_id,))
+    players = c.fetchall()
+    conn.close()
+    
+    res = "🏥 <b>МЕДИЦИНСКИЙ ЦЕНТР</b>\n————————————————————\n\n"
+    
+    now = datetime.datetime.now()
+    training, injured, banned = [], [], []
 
-        # Формируем текст
-        res += "🚑 <b>Травмированные:</b>\n"
-        res += "\n".join(injured_list) if injured_list else "<i>— Лазарет пуст</i>"
-        
-        res += "\n\n🟥 <b>Дисквалификации:</b>\n"
-        res += "\n".join(banned_list) if banned_list else "<i>— Чисто</i>"
-        
-        await message.answer(res, parse_mode="HTML")
-        
-    except Exception as e:
-        print(f"❌ ОШИБКА В ЛАЗАРЕТЕ: {e}")
-        await message.answer("⚠️ Ошибка в структуре базы. Убедись, что колонки injury_remaining и is_banned существуют.")
+    for p in players:
+        name, pos, inj, ban, t_until = p
+        if t_until:
+            end = datetime.datetime.strptime(t_until, "%Y-%m-%d %H:%M:%S")
+            if end > now:
+                rem = end - now
+                training.append(f"🏋️‍♂️ {name} ({pos}) — {rem.seconds // 3600}ч. {(rem.seconds//60)%60}м.")
+        if inj > 0:
+            injured.append(f"🚑 {name} ({pos}) — {inj} тур(а)")
+        if ban > 0:
+            banned.append(f"🟥 {name} ({pos}) — Бан")
+
+    res += "<b>🏋️‍♂️ На тренировке:</b>\n" + ("\n".join(training) if training else "<i>— Никого</i>") + "\n\n"
+    res += "<b>🚑 Травмированные:</b>\n" + ("\n".join(injured) if injured else "<i>— Пусто</i>") + "\n\n"
+    res += "<b>🟥 Дисквалификации:</b>\n" + ("\n".join(banned) if banned else "<i>— Чисто</i>")
+    
+    await message.answer(res, parse_mode="HTML")
 
 @dp.callback_query(F.data == "continue_match")
 async def continue_match_handler(cb: types.CallbackQuery):
@@ -3137,15 +3476,16 @@ async def finish_match(msg, uid):
 
     # Определение результата и награды
     if score_me > score_opp:
-        reward = 5
+        reward = 2
         res = f"🎉 Победа! Вы заработали призовые: +{reward} млн €"
     elif score_me == score_opp:
         reward = 1
         res = f"🤝 Ничья. Призовые: +{reward} млн €"
     else:
+        reward = 0
         res = "❌ Поражение. В этот раз без призовых."
 
-    # --- ЛОГИКА УСТАЛОСТИ И ТРАВМ ---
+    # --- ЛОГИКА УСТАЛОСТИ И ТРАВМ (ТВОЕ НЕ УДАЛЯТЬ) ---
     
     # 1. Считаем, сколько уже травмированных в клубе (макс 4)
     c.execute('SELECT COUNT(*) FROM squad WHERE user_id = ? AND injury_remaining > 0', (uid,))
@@ -3158,7 +3498,7 @@ async def finish_match(msg, uid):
         # Используем tired. т.к. функция в другом файле
         added_fatigue = tired.calculate_match_fatigue(player['pos'], is_league=False)
         
-        # Обновляем стамину СТРОГО по db_id (если его нет в словаре, используем имя как запасной вариант)
+        # Обновляем стамину СТРОГО по db_id
         p_id = player.get('db_id')
         
         if p_id:
@@ -3176,9 +3516,8 @@ async def finish_match(msg, uid):
         row = c.fetchone()
         current_stamina = row[0] if row else 0
         
-        # Проверяем шанс травмы (внутри цикла для каждого игрока!)
+        # Проверяем шанс травмы
         if current_injured_count < 4:
-            # can_get_injured и check_injury_chance должны быть в модуле injured
             if injured.can_get_injured(current_injured_count) and injured.check_injury_chance(current_stamina):
                 inj_name, duration = injured.get_random_injury()
                 
@@ -3195,9 +3534,10 @@ async def finish_match(msg, uid):
                 injury_log += f"\n🚑 <b>Травма:</b> {player['name']} ({inj_name} на {duration} матчей)"
                 current_injured_count += 1 
 
-    # --- ОБНОВЛЕНИЕ ДАННЫХ ПОЛЬЗОВАТЕЛЯ ---
+    # --- ОБНОВЛЕНИЕ ДАННЫХ ПОЛЬЗОВАТЕЛЯ (ОБЩАЯ СТАТИСТИКА) --- 
     from datetime import datetime
     
+    # Обновляем баланс, голы и дату
     c.execute('''UPDATE users 
                  SET balance = balance + ?, 
                      goals_scored = goals_scored + ?, 
@@ -3205,6 +3545,15 @@ async def finish_match(msg, uid):
                  WHERE user_id = ?''', 
               (reward, score_me, datetime.now().strftime("%Y-%m-%d %H:%M:%S"), uid))
     
+    # Добавляем +1 в общую колонку побед/ничей/поражений
+    if score_me > score_opp:
+        c.execute('UPDATE users SET wins = wins + 1 WHERE user_id = ?', (uid,))
+    elif score_me == score_opp:
+        c.execute('UPDATE users SET draws = draws + 1 WHERE user_id = ?', (uid,))
+    else:
+        c.execute('UPDATE users SET losses = losses + 1 WHERE user_id = ?', (uid,))
+    
+    # Снимаем бан за КК (если был временный)
     c.execute('UPDATE squad SET is_banned = 0 WHERE user_id = ? AND is_banned = 1', (uid,))
     
     conn.commit()
@@ -3265,25 +3614,26 @@ async def show_top_cards(cb: types.CallbackQuery):
 @dp.callback_query(F.data == "stats_club")
 async def show_stats_club(cb: types.CallbackQuery):
     conn = get_db(); c = conn.cursor()
-    # Достаем всё: вины, ничьи, лузы, голы, а также ассисты и карточки
-    c.execute('''SELECT wins, draws, losses, goals_scored, club, 
-                        assists, yellow_cards, red_cards 
+    # Складываем обычные показатели и лиговые
+    c.execute('''SELECT 
+                 (wins + league_wins), 
+                 (draws + league_draws), 
+                 (losses + league_losses), 
+                 (goals_scored + league_goals), 
+                 club 
                  FROM users WHERE user_id = ?''', (cb.from_user.id,))
     row = c.fetchone(); conn.close()
     
     if not row: return await cb.answer("Клуб не найден")
     
-    # Распаковываем 8 значений
-    w, d, l, g, club, assists, yc, rc = row
-    pts = w * 3 + d
+    w, d, l, total_g, club = row
     
     text = (f"📈 <b>Общая статистика клуба ({club}):</b>\n"
-            f"<i>(Учитываются матчи с ботами и в Лиге)</i>\n\n"
+            f"<i>(Лига + Товарищеские матчи)</i>\n\n"
             f"✅ Победы: {w} | 🤝 Ничьи: {d} | ❌ Поражения: {l}\n"
             f"————————————————\n"
-            f"⚽️ Всего голов: <b>{g}</b>\n")
+            f"⚽️ Всего забито: <b>{total_g}</b>\n")
     
-    # Добавляем новые кнопки для топов по ассистам и карточкам
     kb = types.InlineKeyboardMarkup(inline_keyboard=[
         [types.InlineKeyboardButton(text="⚽️ Топ бомбардиров", callback_data="st_goals")],
         [types.InlineKeyboardButton(text="🅰️ Топ ассистентов", callback_data="st_assists")],
@@ -3457,7 +3807,6 @@ async def player_stats_callback(cb: types.CallbackQuery):
 async def show_leaderboard(m: types.Message):
     conn = get_db(); c = conn.cursor()
     
-    # 1. Проверяем, есть ли вообще матчи в этом сезоне
     c.execute('SELECT COUNT(*) FROM league_schedule')
     has_league = c.fetchone()[0]
     
@@ -3471,25 +3820,23 @@ async def show_leaderboard(m: types.Message):
             parse_mode="HTML"
         )
 
-    # 2. Твой основной запрос (теперь он будет актуальным)
+    # Запрос по лиговым колонкам
     c.execute('''
-        SELECT club, wins, draws, losses, goals_scored,
-               (wins + draws + losses) as played,
-               (wins * 3 + draws) as pts 
+        SELECT club, league_wins, league_draws, league_losses, league_goals,
+               (league_wins + league_draws + league_losses) as played,
+               (league_wins * 3 + league_draws) as pts 
         FROM users 
-        WHERE (wins + draws + losses) > 0
-        ORDER BY pts DESC, goals_scored DESC LIMIT 15
+        WHERE (league_wins + league_draws + league_losses) > 0
+        ORDER BY pts DESC, league_goals DESC LIMIT 15
     ''')
     
     rows = c.fetchall()
     conn.close()
 
-    # Если матчи есть, но никто еще не сыграл
     if not rows:
         return await m.answer("🏆 Лига готова к старту!\nПервые матчи тура еще не сыграны.")
 
-    # --- Отрисовка таблицы (твой дизайн) ---
-    text = "🏆 <b>ТУРНИРНАЯ ТАБЛИЦА</b>\n"
+    text = "🏆 <b>ТУРНИРНАЯ ТАБЛИЦА (ЛИГА)</b>\n"
     text += "<code> №  Клуб         И  В-Н-П  Г   О</code>\n"
     text += "<code>——————————————————————————————</code>\n"
 
@@ -3547,8 +3894,7 @@ async def admin_list_users(cb: types.callback_query):
 async def adm(m: types.Message):
     if m.from_user.id not in ADMINS: return
     b = InlineKeyboardBuilder()
-    b.button(text="👥 Список юзеров (ID)", callback_data="admin_list_users") # Новая кнопка
-    b.button(text="🏃 Дать игрока", callback_data="admin_give_player")
+    b.button(text="👥 Список юзеров (ID)", callback_data="admin_list_users")
     b.button(text="🎲 Сгенерировать 3-х агентов", callback_data="admin_gen_random_fas")
     b.button(text="🔄 ТО (Открыть/Закрыть)", callback_data="admin_toggle_transfers")
     b.button(text="📅 Сменить полугодие", callback_data="next_half_season")
@@ -3558,6 +3904,7 @@ async def adm(m: types.Message):
     b.button(text="⚽️ Провести ТУР", callback_data="admin_league_run_tour")
     b.button(text="📰 Выпустить газету", callback_data="admin_post_news")
     b.button(text="👞 Исключить из клуба", callback_data="admin_kick_club")
+    b.button(text="💎 Апгрейд рейтинга", callback_data="admin_upgrade_start")
     b.button(text="🆕 Начать Кубок (20 команд)", callback_data="admin_init_cup")
     b.button(text="⚽️ Запустить тур Кубка", callback_data="run_cup_stage")
     b.button(text="🏆 Провести ФИНАЛ", callback_data="run_cup_final")
@@ -4090,27 +4437,54 @@ async def process_give(m: types.Message, state: FSMContext):
         conn.commit(); conn.close(); await m.answer("✅ Выдан"); await state.clear()
     except: await m.answer("Ошибка формата")
 
-# 1. Выдача монет
 @dp.callback_query(F.data == "admin_give_money")
-async def pre_give_money(cb: types.CallbackQuery, state: FSMContext):
-    await cb.message.answer("Введите ID пользователя и сумму через пробел (например: 12345678 500):")
-    await state.set_state("waiting_for_money_data")
+async def admin_list_users(cb: types.CallbackQuery):
+    if cb.from_user.id not in ADMINS: return
+    
+    conn = get_db(); c = conn.cursor()
+    # Берем баланс как есть из таблицы users
+    c.execute('SELECT user_id, username, balance FROM users')
+    users = c.fetchall(); conn.close()
+    
+    builder = InlineKeyboardBuilder()
+    for uid, name, bal in users:
+        label = name if name else f"ID: {uid}"
+        
+        # ИСПРАВЛЕНО: Делим реальный баланс на 1,000,000 для отображения в "M" (миллионах)
+        display_bal = bal / 1_000_000 
+        
+        # Теперь в кнопке будет "Имя (150.0M)" вместо "Имя (150000000M)"
+        builder.button(text=f"{label} ({display_bal:.1f}M)", callback_data=f"give_money_to_{uid}")
+    
+    builder.adjust(1)
+    builder.row(types.InlineKeyboardButton(text="⬅️ Назад", callback_data="admin_main"))
+    await cb.message.edit_text("💰 <b>Кому начислить деньги?</b>", reply_markup=builder.as_markup(), parse_mode="HTML")
 
-@dp.message(F.state == "waiting_for_money_data")
-async def confirm_give_money(m: types.Message, state: FSMContext):
-    if m.from_user.id not in ADMINS: return
-    try:
-        target_id, amount = m.text.split()
-        amount = int(amount)
-        
-        conn = get_db(); c = conn.cursor()
-        c.execute('UPDATE users SET balance = balance + ? WHERE user_id = ?', (amount, target_id))
-        conn.commit(); conn.close()
-        
-        await m.answer(f"✅ Баланс пользователя {target_id} пополнен на {amount} млн €.")
-        await bot.send_message(target_id, f"💰 Администратор начислил вам {amount} млн €!")
-    except:
-        await m.answer("❌ Ошибка. Введите ID и число правильно.")
+# Шаг 2: Запрос суммы
+@dp.callback_query(F.data.startswith("give_money_to_"))
+async def ask_amount(cb: types.CallbackQuery, state: FSMContext):
+    target_id = cb.data.replace("give_money_to_", "")
+    await state.update_data(target_uid=target_id)
+    await cb.message.answer(f"🔢 Введите сумму (число) для {target_id}:")
+    await state.set_state("waiting_for_money_amount")
+
+# Шаг 3: Применение
+@dp.message(F.state == "waiting_for_money_amount")
+async def apply_money(m: types.Message, state: FSMContext):
+    if not m.text.lstrip('-').isdigit():
+        return await m.answer("❌ Введите число!")
+    
+    amount = int(m.text)
+    data = await state.get_data()
+    target_id = data.get('target_uid')
+    
+    if not target_id: return await state.clear()
+
+    conn = get_db(); c = conn.cursor()
+    c.execute('UPDATE users SET balance = balance + ? WHERE user_id = ?', (amount, target_id))
+    conn.commit(); conn.close()
+    
+    await m.answer(f"✅ Пользователю {target_id} начислено {amount} млн €.")
     await state.clear()
 
 # 2. Снятие пользователя с клуба (обнуление состава без удаления юзера)
@@ -4174,25 +4548,22 @@ async def run_league_tour(cb: types.CallbackQuery):
 
         # 2. ЖЕСТКИЙ ТЕХНАРЬ
         if h_count < 11 or a_count < 11:
-            # Логика определения счета (кто виноват)
             if h_count < 11 and a_count < 11:
                 h_res, a_res = 0, 0
-                reason = "Обе команды не выставили полный состав"
+                c.execute('UPDATE users SET league_losses=league_losses+1 WHERE user_id IN (?,?)', (h_id, a_id))
             elif h_count < 11:
                 h_res, a_res = 0, 3
-                reason = f"Некомплект у {h_club} ({h_count}/11)"
-                c.execute('UPDATE users SET wins=wins+1, goals_scored=goals_scored+3 WHERE user_id=?', (a_id,))
-                c.execute('UPDATE users SET losses=losses+1 WHERE user_id=?', (h_id,))
+                c.execute('UPDATE users SET league_wins=league_wins+1, league_goals=league_goals+3 WHERE user_id=?', (a_id,))
+                c.execute('UPDATE users SET league_losses=league_losses+1 WHERE user_id=?', (h_id,))
             else:
                 h_res, a_res = 3, 0
+                c.execute('UPDATE users SET league_wins=league_wins+1, league_goals=league_goals+3 WHERE user_id=?', (h_id,))
                 reason = f"Некомплект у {a_club} ({a_count}/11)"
-                c.execute('UPDATE users SET wins=wins+1, goals_scored=goals_scored+3 WHERE user_id=?', (h_id,))
-                c.execute('UPDATE users SET losses=losses+1 WHERE user_id=?', (a_id,))
+                c.execute('UPDATE users SET league_losses=league_losses+1 WHERE user_id=?', (a_id,))
 
             # Закрываем матч в базе
             c.execute('UPDATE league_schedule SET status = "finished" WHERE id = ?', (m_id,))
             conn.commit()
-
             tech_msg = (f"🏟 <b>ТЕХНИЧЕСКИЙ РЕЗУЛЬТАТ</b>\n\n"
                         f"⚔️ <b>{h_club}</b> {h_res}:{a_res} <b>{a_club}</b>\n"
                         f"————————————————————\n"
@@ -4228,7 +4599,7 @@ async def run_league_tour(cb: types.CallbackQuery):
         match_events = []
         
 
-        for _ in range(12):
+        for _ in range(8):
             minute = random.randint(1, 90)
             roll = random.random()
             
@@ -4300,14 +4671,14 @@ async def run_league_tour(cb: types.CallbackQuery):
         c.execute('UPDATE league_schedule SET status = "finished" WHERE id = ?', (m_id,))
 
         if h_score > a_score:
-            c.execute('UPDATE users SET wins=wins+1, goals_scored=goals_scored+? WHERE user_id=?', (h_score, h_id))
-            c.execute('UPDATE users SET losses=losses+1, goals_scored=goals_scored+? WHERE user_id=?', (a_score, a_id))
+            c.execute('UPDATE users SET league_wins=league_wins+1, league_goals=league_goals+? WHERE user_id=?', (h_score, h_id))
+            c.execute('UPDATE users SET league_losses=league_losses+1, league_goals=league_goals+? WHERE user_id=?', (a_score, a_id))
         elif a_score > h_score:
-            c.execute('UPDATE users SET wins=wins+1, goals_scored=goals_scored+? WHERE user_id=?', (a_score, a_id))
-            c.execute('UPDATE users SET losses=losses+1, goals_scored=goals_scored+? WHERE user_id=?', (h_score, h_id))
+            c.execute('UPDATE users SET league_wins=league_wins+1, league_goals=league_goals+? WHERE user_id=?', (a_score, a_id))
+            c.execute('UPDATE users SET league_losses=league_losses+1, league_goals=league_goals+? WHERE user_id=?', (h_score, h_id))
         else:
-            c.execute('UPDATE users SET draws=draws+1, goals_scored=goals_scored+? WHERE user_id=?', (h_score, h_id))
-            c.execute('UPDATE users SET draws=draws+1, goals_scored=goals_scored+? WHERE user_id=?', (a_score, a_id))
+            c.execute('UPDATE users SET league_draws=league_draws+1, league_goals=league_goals+? WHERE user_id=?', (h_score, h_id))
+            c.execute('UPDATE users SET league_draws=league_draws+1, league_goals=league_goals+? WHERE user_id=?', (a_score, a_id))
 
         match_report = (
             f"<b>{h_club}</b> 🆚 <b>{a_club}</b>\n"
@@ -4858,6 +5229,92 @@ async def catch_player(cb: types.CallbackQuery):
     finally:
         conn.close()
 
+# 1. Выбор клуба (Без изменений, тут все ок)
+@dp.callback_query(F.data == "admin_upgrade_start")
+async def admin_upgrade_clubs(cb: types.CallbackQuery):
+    if cb.from_user.id not in ADMINS: return
+    builder = InlineKeyboardBuilder()
+    for club in CLUBS.keys():
+        builder.button(text=club, callback_data=f"adm_up_cl_{club}")
+    builder.adjust(2)
+    builder.row(types.InlineKeyboardButton(text="⬅️ Назад", callback_data="admin_main"))
+    await cb.message.edit_text("⚙️ <b>Админ-апгрейд</b>\nВыберите клуб:", reply_markup=builder.as_markup(), parse_mode="HTML")
+
+# 2. Список игроков клуба
+@dp.callback_query(F.data.startswith("adm_up_cl_"))
+async def admin_upgrade_players(cb: types.CallbackQuery):
+    club_name = cb.data.replace("adm_up_cl_", "")
+    conn = get_db(); c = conn.cursor()
+    
+    # ИСПРАВЛЕННЫЙ ЗАПРОС: Соединяем squad и users, чтобы найти игроков по названию клуба
+    c.execute('''
+        SELECT s.id, s.player_name, s.rating 
+        FROM squad s
+        JOIN users u ON s.user_id = u.user_id
+        WHERE u.club = ?
+    ''', (club_name,))
+    
+    players = c.fetchall()
+    conn.close()
+    
+    if not players:
+        return await cb.answer(f"❌ В клубе {club_name} нет игроков", show_alert=True)
+    
+    builder = InlineKeyboardBuilder()
+    for p in players:
+        builder.button(text=f"{p[1]} ({p[2]})", callback_data=f"adm_up_pl_{p[0]}")
+    
+    builder.adjust(1)
+    builder.row(types.InlineKeyboardButton(text="⬅️ К клубам", callback_data="admin_upgrade_start"))
+    await cb.message.edit_text(f"Игроки <b>{club_name}</b>:", reply_markup=builder.as_markup(), parse_mode="HTML")
+
+# 3. Ввод числа (Добавлена проверка pid)
+@dp.callback_query(F.data.startswith("adm_up_pl_"))
+async def admin_ask_amount(cb: types.CallbackQuery, state: FSMContext):
+    pid = cb.data.replace("adm_up_pl_", "")
+    # Сохраняем pid игрока, чтобы использовать в следующем шаге
+    await state.update_data(up_pid=pid)
+    await cb.message.answer("🔢 На сколько поднять рейтинг? (введите число, например 5 или -3)")
+    await state.set_state(AdminUpgrade.waiting_for_amount)
+
+# 4. Применение (Полный фикс UPDATE)
+@dp.message(AdminUpgrade.waiting_for_amount)
+async def admin_apply_upgrade(m: types.Message, state: FSMContext):
+    # Проверка на число (включая отрицательные)
+    text = m.text.replace('-', '', 1) if m.text.startswith('-') else m.text
+    if not text.isdigit(): 
+        return await m.answer("❌ Введите целое число!")
+    
+    data = await state.get_data()
+    # Защита от потери данных в state
+    if 'up_pid' not in data:
+        await state.clear()
+        return await m.answer("❌ Ошибка: данные утеряны. Начните заново.")
+        
+    pid = data['up_pid']
+    amount = int(m.text)
+    
+    conn = get_db(); c = conn.cursor()
+    
+    # Обновляем именно rating. Стамина не более 50. Сброс слота обязателен.
+    c.execute('''UPDATE squad SET 
+                 rating = rating + ?, 
+                 stamina = CASE WHEN stamina > 50 THEN 50 ELSE stamina END,
+                 slot_id = NULL,
+                 status = "bench" 
+                 WHERE id = ?''', (amount, pid))
+    
+    c.execute('SELECT player_name, rating FROM squad WHERE id = ?', (pid,))
+    p = c.fetchone()
+    conn.commit(); conn.close()
+    
+    if p:
+        await m.answer(f"✅ Рейтинг {p[0]} изменен.\n📈 Новый рейтинг: {p[1]}\n🏃‍♂️ Статус: Переведен в запас")
+    else:
+        await m.answer("❌ Ошибка: Игрок не найден в базе.")
+        
+    await state.clear()
+
 # 3. Моментальная очистка всей базы (Полный вайп)
 @dp.callback_query(F.data == "admin_full_reset")
 async def confirm_full_reset(cb: types.CallbackQuery):
@@ -4880,11 +5337,12 @@ async def main():
     print("✅ База данных инициализирована")
     
     asyncio.create_task(process_recovery(get_db)) 
-    
+    scheduler.start()
+
     # 3. Запускаем бота
     print("🚀 Бот запущен...")
     await dp.start_polling(bot, allowed_updates=["message", "callback_query", "chat_member"])
     
 
 if __name__ == "__main__":
-    asyncio.run(main()) # Эта строка должна быть С ОТСТУПОМ и на новой строке
+    asyncio.run(main()) 
