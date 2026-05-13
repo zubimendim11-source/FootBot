@@ -462,7 +462,7 @@ class ThrottlingMiddleware(BaseMiddleware):
 limit_manager = CatchLimitMiddleware()
 
 # --- КОНФИГ ---
-TOKEN = "8784991908:AAEBvprrJSu2SWidbaBlB8uoo265TfPRLTs"
+TOKEN = "8784991908:AAGdZ5mcIfc1nW0u77-HuwkN-Ym9eJpaR5U"
 bot = Bot(token=TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
 dp.callback_query.outer_middleware(limit_manager)
@@ -478,10 +478,10 @@ CHAT_ID = 5611356552
 from aiogram.client.session.aiohttp import AiohttpSession
 
 # Создаем сессию с указанием прокси PythonAnywhere
-# session = AiohttpSession(proxy="http://proxy.server:3128")
+session = AiohttpSession(proxy="http://proxy.server:3128")
 
 # Инициализируем бота с этой сессией
-# bot = Bot(token=TOKEN, session=session)
+bot = Bot(token=TOKEN, session=session)
 
 matches_data = {}
 
@@ -1169,18 +1169,21 @@ async def cmd_rules(m: types.Message):
         "1. <b>Оскорбление родных</b> — Мут от 2 до 8 часов.\n"
         "2. <b>Спам/Флуд командами</b> — Мут от 30 мин до 2 часов (бот лагает!).\n"
         "3. <b>Абуз кнопок в чате</b> — Авто-мут 10 мин (юзай рынок в личке).\n"
-        "4. <b>Оскорбление админов</b> — Мут на 12 часов или бан (на усмотрение).\n"
-        "5. <b>Реклама сторонних ресурсов</b> — Мут от 2 часов.\n"
+        "4. <b>Оскорбление админов</b> — Мут на 12 часов или бан.\n"
+        "5. <b>Реклама сторонних ресурсов</b> — Мут от 2 часов или бан.\n"
         "6. <b>Махинации с трансферами</b> — Обнуление состава или бан.\n"
         "7. <b>Неадекватное поведение/Токсичность</b> — Мут от 1 часа.\n"
         "8. <b>Мат в избыточном количестве</b> — Предупреждение, затем мут.\n"
         "9. <b>Попытки взлома/Багоюз</b> — Бан по ID навсегда.\n"
         "10. <b>Продажа аккаунтов/игроков</b> — Бан обеих сторон.\n"
+        "11. <b>Контент 18+ (Порно/Шок)</b> — Бан или мут на 24 часа.\n"
+        "12. <b>Разглашение личной информации</b> — Бан навсегда (доксинг запрещен).\n"
+        "13. <b>Пропаганда/Дискриминация</b> — Мут от 12 часов.\n"
+        "14. <b>Дезинформация/Клевета</b> — Мут от 2 часов.\n"
         "————————————————————\n"
         "<i>Незнание правил не освобождает от ответственности!</i>"
     )
     await m.answer(rules, parse_mode="HTML")
-
 @dp.message(F.text == "!клубы")
 async def show_all_clubs(message: types.Message):
     conn = get_db(); c = conn.cursor()
@@ -9672,7 +9675,7 @@ async def main():
     # КРИТИЧЕСКИ ВАЖНО: Дай SQLite время прописать таблицы на диск
     await asyncio.sleep(1)
 
-    # await bot.delete_webhook(drop_pending_updates=True)
+    await bot.delete_webhook(drop_pending_updates=True)
 
     # 2. Теперь, когда таблицы ТОЧНО есть, запускаем остальное
     try:
